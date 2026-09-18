@@ -19,7 +19,13 @@ import {
   useAPI,
 } from "../api";
 import { useViewState } from "../lib/view-state";
-import type { CameraPreset, CameraStatus, Config } from "../types";
+import type {
+  CameraPreset,
+  CameraStatus,
+  Config,
+  NativeCameraStatus,
+  NativeServiceState,
+} from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,7 +58,153 @@ const resolutions = [
 ];
 const qualityRates = [2, 6, 15, 999];
 
+const nativeStateLabels: Record<NativeServiceState, string> = {
+  running: "服务运行中",
+  stopped: "服务已停止",
+  failed: "服务启动失败",
+  transitioning: "服务切换中",
+  degraded: "部分服务未运行",
+  unknown: "服务状态未知",
+  unavailable: "本地模式",
+};
+const nativeServiceLabels: Record<string, string> = {
+  "dji_camera3.service": "原生拍摄服务",
+  "dji_media.service": "媒体服务",
+  "gui.service": "主屏界面",
+  "sub_gui.service": "副屏界面",
+  "dji_sw_uav.service": "Mimo 通信服务",
+};
+
 export function CameraPage() {
+  const native = useAPI<NativeCameraStatus>(
+    "native_camera_status",
+    undefined,
+    5000,
+  );
+  const capture = useAPI<CameraStatus>("camera_status", undefined, 3000);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  useEffect(() => {
+    if (capture.data && capture.data.state !== "stopped") setAdvancedOpen(true);
+  }, [capture.data?.state]);
+
+  return (
+    <>
+      <PageHeader
+        title="相机"
+        description="查看原生服务状态，按需使用高级独立采集。"
+        actions={
+          <Button
+            variant="outline"
+            disabled={native.isFetching || capture.isFetching}
+            onClick={() =>
+              void invalidate("native_camera_status", "camera_status")
+            }
+          >
+            <RefreshCw />
+            刷新状态
+          </Button>
+        }
+      />
+      {capture.data?.reboot_required && (
+        <div className="mb-4">
+          <Notice tone="warning">
+            原生服务已受影响，停止独立采集后仍需整机重启恢复。
+            <a
+              href="#/system?section=maintenance"
+              className="ml-2 underline underline-offset-4"
+            >
+              前往重启
+            </a>
+          </Notice>
+        </div>
+      )}
+      <Card title="原生相机">
+        {native.isPending ? (
+          <Spinner />
+        ) : native.isError ? (
+          <Notice tone="warning">
+            无法读取原生服务状态：{native.error.message}
+          </Notice>
+        ) : (
+          <>
+            <Badge
+              variant={
+                native.data.service_state === "running"
+                  ? "default"
+                  : "secondary"
+              }
+            >
+              {nativeStateLabels[native.data.service_state]}
+            </Badge>
+            {native.data.reason && (
+              <p className="mt-3 text-sm text-muted-foreground">
+                {native.data.reason}
+              </p>
+            )}
+            <dl className="mt-5 grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <dt className="text-muted-foreground">原生录像状态</dt>
+                <dd className="mt-1">未接入</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">原生实时预览</dt>
+                <dd className="mt-1">未接入</dd>
+              </div>
+            </dl>
+            <p className="mt-5 text-sm leading-6 text-muted-foreground">
+              网页原生预览和拍摄控制尚未接入，请继续使用相机或 Mimo
+              操作。服务运行状态无法判断当前是否正在录像或预览。
+            </p>
+            {native.data.services.length > 0 && (
+              <details className="mt-5 rounded-lg border p-3">
+                <summary className="cursor-pointer text-sm font-medium">
+                  查看原生服务详情
+                </summary>
+                <dl className="mt-4 space-y-3 text-sm">
+                  {native.data.services.map((service) => (
+                    <div
+                      key={service.unit}
+                      className="flex flex-wrap justify-between gap-2"
+                    >
+                      <dt>
+                        {nativeServiceLabels[service.unit] ?? service.unit}
+                      </dt>
+                      <dd className="text-muted-foreground">
+                        {nativeStateLabels[service.state]}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+                <p className="mt-4 text-xs text-muted-foreground">
+                  Mimo 通信服务运行不代表手机已连接。
+                </p>
+              </details>
+            )}
+          </>
+        )}
+      </Card>
+      <details
+        open={advancedOpen}
+        onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+        className="mt-6 rounded-xl border bg-card p-5"
+      >
+        <summary className="cursor-pointer font-medium">高级：独立采集</summary>
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">
+          独立采集会中断原生拍摄、屏幕和 Mimo 连接，恢复原生功能需要重启相机。
+          展开此处只查看设置；启动时才会接管相机。
+        </p>
+        {advancedOpen && (
+          <div className="mt-5">
+            <IndependentCapture />
+          </div>
+        )}
+      </details>
+    </>
+  );
+}
+
+function IndependentCapture() {
   const status = useAPI<CameraStatus>("camera_status", undefined, 2000);
   const config = useAPI<Config>("config");
   const presets = useAPI<{ last_success: CameraPreset | null }>(
@@ -161,7 +313,13 @@ export function CameraPage() {
     setNotice("");
     try {
       await post(name, data);
-      await invalidate("camera_status", "config", "sysinfo", "camera_presets");
+      await invalidate(
+        "camera_status",
+        "native_camera_status",
+        "config",
+        "sysinfo",
+        "camera_presets",
+      );
     } catch (e) {
       setError(
         `${errorText(e)}。如果连接中断，先刷新采集状态，不要立即重复操作。`,
@@ -250,37 +408,26 @@ export function CameraPage() {
 
   return (
     <div className="pb-24 md:pb-0">
-      <PageHeader
-        title="实时画面"
-        description="查看画面、控制采集。切换页面不会停止设备推流。"
-        actions={
-          <Button
-            variant="outline"
-            onClick={() => void status.refetch()}
-            disabled={status.isFetching}
-          >
-            <RefreshCw />
-            刷新状态
-          </Button>
-        }
-      />
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">独立采集</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            此处的参数和状态仅属于 Action Control 自己的采集。
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          onClick={() => void status.refetch()}
+          disabled={status.isFetching}
+        >
+          <RefreshCw />
+          刷新独立采集状态
+        </Button>
+      </div>
       {status.isError && (
         <div className="mb-4">
           <Notice tone="warning">
             采集状态未知：{status.error.message}。恢复连接后请先确认状态。
-          </Notice>
-        </div>
-      )}
-      {status.data?.reboot_required && (
-        <div className="mb-4">
-          <Notice tone="warning">
-            停止推流后，原生拍摄仍需要整机重启恢复。
-            <a
-              href="#/system?section=maintenance"
-              className="ml-2 underline underline-offset-4"
-            >
-              前往重启
-            </a>
           </Notice>
         </div>
       )}
@@ -300,7 +447,7 @@ export function CameraPage() {
             <Badge
               variant={running && !status.isError ? "default" : "secondary"}
             >
-              采集：{captureState}
+              独立采集：{captureState}
             </Badge>
             <Badge variant="secondary">浏览器：{playback}</Badge>
             {running && !status.isError && (
@@ -360,8 +507,8 @@ export function CameraPage() {
                 running ||
                 transition
               }
-              title="启动采集？"
-              description="将停止冲突的 DJI 原生服务并占用相机。即使启动失败或随后停止，仍可能需要整机重启才能恢复原生功能。"
+              title="接管相机并启动独立采集？"
+              description="将停止原生相机、屏幕和 Mimo 通信服务。即使启动失败或随后停止，仍可能需要整机重启才能恢复原生功能。"
               onConfirm={async () => {
                 if (!draft || !form.current)
                   throw new Error("采集参数尚未就绪。");
@@ -378,11 +525,12 @@ export function CameraPage() {
                   bitrate: draft.cam_bitrate,
                   quality: draft.cam_quality,
                   confirm: true,
+                  takeover_native: true,
                 });
               }}
             >
               <Play />
-              启动采集
+              启动独立采集
             </ConfirmButton>
             <Button
               variant="outline"
@@ -396,7 +544,7 @@ export function CameraPage() {
               onClick={() => void control("camera_stop").catch(() => {})}
             >
               <Square />
-              停止采集
+              停止独立采集
             </Button>
             <span className="ml-auto text-xs text-muted-foreground md:ml-1">
               {!hardware ? "未连接相机" : captureState}

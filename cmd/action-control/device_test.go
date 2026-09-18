@@ -72,11 +72,11 @@ func TestStreamSlowClientAndDisconnect(t *testing.T) {
 	c.state = "starting"
 	c.mu.Unlock()
 	w := httptest.NewRecorder()
-	start := httptest.NewRequest("POST", "/api/camera_start", strings.NewReader(`{"confirm":true}`))
+	start := httptest.NewRequest("POST", "/api/camera_start", strings.NewReader(`{"confirm":true,"takeover_native":true}`))
 	start.Header.Set("Content-Type", "application/json")
 	c.start(w, start)
 	c.operation.Unlock()
-	if w.Code != 409 {
+	if w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"camera_busy"`) {
 		t.Fatalf("concurrent start was not refused: %d", w.Code)
 	}
 }

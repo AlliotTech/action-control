@@ -17,6 +17,8 @@ import (
 )
 
 type CameraStatus struct {
+	Source  string  `json:"source"`
+	Scope   string  `json:"scope"`
 	State   string  `json:"state"`
 	Running bool    `json:"running"`
 	Width   int     `json:"width"`
@@ -84,7 +86,10 @@ func cameraArgs(c Config) []string {
 	buffers := min(32, max(2, int(float64(c.CamFPS)/15*pixels/(1920*1080))))
 	return []string{"-q", "djiqmmfsrc", "camera=0", "!", fmt.Sprintf("video/x-raw,width=%d,height=%d,format=NV12,framerate=%d/1", c.CamW, c.CamH, c.CamFPS), "!", "djicamc2venc", "idr-interval=30", "control-rate=disable", fmt.Sprintf("quant-i-frames=%d", qi), fmt.Sprintf("quant-p-frames=%d", qp), "!", "video/x-h264,stream-format=byte-stream,alignment=au", "!", "h264parse", "config-interval=-1", "!", "mpegtsmux", "alignment=1", "!", "queue", fmt.Sprintf("max-size-buffers=%d", buffers), "!", "fdsink", "fd=1", "sync=false"}
 }
-func stopNativeServices(a *App) ([]string, error) {
+func stopNativeServices(a *App, takeoverNative bool) ([]string, error) {
+	if !takeoverNative {
+		return nil, errNativeCameraProtected
+	}
 	out, err := a.Run(a.Ctx, 10*time.Second, "systemctl", "list-units", "--type=service", "--all", "--no-legend", "--plain")
 	if err != nil {
 		return nil, err
@@ -117,7 +122,7 @@ func (c *cameraController) status() CameraStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	cfg := c.config
-	st := CameraStatus{State: c.state, Running: c.state == "running", Width: cfg.CamW, Height: cfg.CamH, FPS: cfg.CamFPS, Port: cfg.CamExtPort, Codec: "H.264/AVC", Reboot: c.app.RebootRequired(), Error: c.lastError}
+	st := CameraStatus{Source: "action-control", Scope: "independent_capture", State: c.state, Running: c.state == "running", Width: cfg.CamW, Height: cfg.CamH, FPS: cfg.CamFPS, Port: cfg.CamExtPort, Codec: "H.264/AVC", Reboot: c.app.RebootRequired(), Error: c.lastError}
 	if c.run != nil {
 		st.Bytes = c.run.bytes
 		st.Clients = len(c.run.clients)
@@ -290,19 +295,18 @@ func (c *cameraController) ensureScreens() error {
 }
 func (c *cameraController) start(w http.ResponseWriter, r *http.Request) {
 	var data struct {
+		cameraTakeoverRequest
 		Width   int     `json:"width"`
 		Height  int     `json:"height"`
 		FPS     int     `json:"fps"`
 		Port    int     `json:"ext_port"`
 		Bitrate float64 `json:"bitrate"`
 		Quality int     `json:"quality"`
-		Confirm bool    `json:"confirm"`
 	}
 	if !readJSON(w, r, &data) {
 		return
 	}
-	if !data.Confirm {
-		jsonError(w, 400, "confirmation_required", errors.New("启动会停止原生服务，必须明确确认"))
+	if !requireCameraTakeover(w, data.cameraTakeoverRequest) {
 		return
 	}
 	if !c.operation.TryLock() {
@@ -377,7 +381,7 @@ func (c *cameraController) start(w http.ResponseWriter, r *http.Request) {
 		c.writeScreenState()
 		jsonError(w, 502, "camera_start_failed", err)
 	}
-	if _, err = stopNativeServices(c.app); err != nil {
+	if _, err = stopNativeServices(c.app, data.TakeoverNative); err != nil {
 		fail(err)
 		return
 	}
@@ -606,6 +610,9 @@ func RegisterCamera(mux *http.ServeMux, a *App) (func() error, error) {
 		c.writeScreenState()
 	}
 	mux.HandleFunc("GET /api/camera_status", func(w http.ResponseWriter, r *http.Request) { jsonResponse(w, 200, c.status()) })
+	mux.HandleFunc("GET /api/native_camera_status", func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, 200, readNativeCameraStatus(r.Context(), a))
+	})
 	mux.HandleFunc("POST /api/camera_start", c.start)
 	mux.HandleFunc("GET /api/camera_presets", func(w http.ResponseWriter, r *http.Request) {
 		preset, err := readCameraPreset(a)
@@ -630,7 +637,12 @@ func RegisterCamera(mux *http.ServeMux, a *App) (func() error, error) {
 	mux.HandleFunc("GET /api/camera_stream", c.stream)
 	mux.HandleFunc("POST /api/camera_snapshot", c.snapshot)
 	mux.HandleFunc("POST /api/dji_kill_all", func(w http.ResponseWriter, r *http.Request) {
-		if !confirmRequest(w, r, a) {
+		var data cameraTakeoverRequest
+		if !readJSON(w, r, &data) || !requireCameraTakeover(w, data) {
+			return
+		}
+		if err := a.RequireManaged(); err != nil {
+			jsonError(w, 503, "device_unavailable", err)
 			return
 		}
 		if !c.operation.TryLock() {
@@ -642,7 +654,7 @@ func RegisterCamera(mux *http.ServeMux, a *App) (func() error, error) {
 			jsonError(w, 409, "camera_running", errors.New("stop capture first"))
 			return
 		}
-		services, err := stopNativeServices(a)
+		services, err := stopNativeServices(a, data.TakeoverNative)
 		if err == nil {
 			err = c.ensureScreens()
 		}

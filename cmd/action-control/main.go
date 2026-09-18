@@ -34,6 +34,12 @@ func main() {
 		}
 	case "screen":
 		err = RunScreen()
+	case "native-status":
+		if len(os.Args) != 2 {
+			err = fmt.Errorf("native-status accepts no arguments")
+		} else {
+			err = runNativeCameraStatus(os.Stdout)
+		}
 	case "network", "dhcp":
 		var a *App
 		a, err = appAt("/")
@@ -67,6 +73,7 @@ func usage() {
 	fmt.Println(`Action Control — DJI Osmo Action 5 Pro
   action-control serve [--listen :8080] [--root /]
   action-control network
+  action-control native-status
   action-control install --source PATH
   action-control update --source PATH
   action-control uninstall --reboot

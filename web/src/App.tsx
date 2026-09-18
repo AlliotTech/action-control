@@ -51,7 +51,7 @@ const ProcessPage = lazy(() =>
 
 const navigation = [
   { id: "overview", name: "概览", icon: LayoutDashboard, page: OverviewPage },
-  { id: "camera", name: "实时画面", icon: Camera, page: CameraPage },
+  { id: "camera", name: "相机", icon: Camera, page: CameraPage },
   { id: "album", name: "相册", icon: Images, page: AlbumPage },
   { id: "files", name: "文件", icon: Folder, page: FilesPage },
   { id: "network", name: "网络", icon: Wifi, page: NetworkPage },
@@ -321,18 +321,18 @@ export function App() {
                   }
                 >
                   {camera.isPending
-                    ? "读取采集状态…"
+                    ? "读取独立采集状态…"
                     : camera.isError
-                      ? "采集状态未知"
+                      ? "独立采集状态未知"
                       : camera.data?.running
-                        ? "正在采集"
+                        ? "独立采集中"
                         : camera.data?.state === "starting"
-                          ? "正在启动采集"
+                          ? "正在启动独立采集"
                           : camera.data?.state === "stopping"
-                            ? "正在停止采集"
+                            ? "正在停止独立采集"
                             : camera.data?.state === "error"
-                              ? "采集异常"
-                              : "采集已停止"}
+                              ? "独立采集异常"
+                              : "独立采集未启动"}
                 </Badge>
                 {camera.data?.running && !camera.isError && (
                   <span className="tabular-nums text-muted-foreground">
@@ -353,7 +353,7 @@ export function App() {
                 href="#/camera"
                 className="font-medium underline underline-offset-4"
               >
-                查看画面与控制采集
+                查看相机
               </a>
             </div>
           )}

@@ -227,7 +227,7 @@ func TestHTTPAccessAndFileBoundaries(t *testing.T) {
 			t.Errorf("storage root deletion accepted: %s", name)
 		}
 	}
-	if w := requestTest(a, h, "POST", "/api/camera_start", strings.NewReader(`{"width":1280,"height":720,"fps":30,"ext_port":8554,"quality":1,"bitrate":4.4,"confirm":true}`), nil); w.Code != 503 {
+	if w := requestTest(a, h, "POST", "/api/camera_start", strings.NewReader(`{"width":1280,"height":720,"fps":30,"ext_port":8554,"quality":1,"bitrate":4.4,"confirm":true,"takeover_native":true}`), nil); w.Code != 503 {
 		t.Fatalf("offline root allowed hardware capture: %d", w.Code)
 	}
 	if err := os.Chmod(a.Path("/blackbox/记录.txt"), 0); err != nil {

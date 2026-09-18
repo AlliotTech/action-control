@@ -27,6 +27,8 @@ export interface SystemInfo {
   reboot_required: boolean;
 }
 export interface CameraStatus {
+  source: "action-control";
+  scope: "independent_capture";
   state: "stopped" | "starting" | "running" | "stopping" | "error";
   running: boolean;
   width: number;
@@ -40,6 +42,32 @@ export interface CameraStatus {
   clients: number;
   reboot_required: boolean;
   error?: string;
+}
+export type NativeServiceState =
+  | "running"
+  | "stopped"
+  | "failed"
+  | "transitioning"
+  | "degraded"
+  | "unknown"
+  | "unavailable";
+export interface NativeCameraStatus {
+  source: "systemd";
+  service_state: NativeServiceState;
+  recording: boolean | null;
+  previewing: boolean | null;
+  control_available: boolean;
+  preview_available: boolean;
+  services: {
+    unit: string;
+    state: NativeServiceState;
+    load_state: string;
+    active_state: string;
+    sub_state: string;
+    main_pid: number;
+  }[];
+  observed_at: string;
+  reason?: string;
 }
 export interface CameraPreset {
   config: Pick<

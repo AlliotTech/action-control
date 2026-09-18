@@ -134,7 +134,7 @@ func TestCameraSuccessfulPresetSurvivesRejectedStartAndFirmwareChange(t *testing
 	if err != nil || preset == nil || !preset.FirmwareMatch || preset.Config.Width != 1280 {
 		t.Fatalf("successful preset: %+v %v", preset, err)
 	}
-	response := requestTest(a, handler, "POST", "/api/camera_start", strings.NewReader(`{"confirm":true,"width":3840,"height":2160,"fps":240,"ext_port":8554,"quality":1,"bitrate":6}`), nil)
+	response := requestTest(a, handler, "POST", "/api/camera_start", strings.NewReader(`{"confirm":true,"takeover_native":true,"width":3840,"height":2160,"fps":240,"ext_port":8554,"quality":1,"bitrate":6}`), nil)
 	if response.Code < 400 {
 		t.Fatal("local test must never start hardware")
 	}

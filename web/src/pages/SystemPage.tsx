@@ -145,6 +145,7 @@ export function SystemPage() {
       await invalidate(
         "sysinfo",
         "camera_status",
+        "native_camera_status",
         "process_list",
         "dji_network",
         "wifi_status",
@@ -281,22 +282,30 @@ export function SystemPage() {
                 </ConfirmButton>
               </>
             )}
-            <ConfirmButton
-              title="停止原生相机服务？"
-              description="停止冲突的 DJI 原生服务并显示双屏保护提示。原生网络单独管理。此操作不会自动开始采集，需整机重启恢复相机原生功能。"
-              disabled={!hardware || busy}
-              variant="destructive"
-              onConfirm={() =>
-                perform(
-                  "dji_kill_all",
-                  { confirm: true },
-                  "原生相机服务已停止；需整机重启恢复。",
-                )
-              }
-            >
-              <ShieldAlert />
-              停止原生相机服务
-            </ConfirmButton>
+            <details className="basis-full rounded-lg border p-3">
+              <summary className="cursor-pointer text-sm font-medium">
+                高级：停止原生相机服务
+              </summary>
+              <p className="my-3 text-sm text-muted-foreground">
+                此操作会中断原生拍摄、屏幕和 Mimo 连接。
+              </p>
+              <ConfirmButton
+                title="停止原生相机服务？"
+                description="停止原生相机、屏幕和 Mimo 通信服务并显示双屏保护提示。原生网络单独管理。此操作不会自动开始采集，需整机重启恢复相机原生功能。"
+                disabled={!hardware || busy}
+                variant="destructive"
+                onConfirm={() =>
+                  perform(
+                    "dji_kill_all",
+                    { confirm: true, takeover_native: true },
+                    "原生相机服务已停止；需整机重启恢复。",
+                  )
+                }
+              >
+                <ShieldAlert />
+                停止原生相机服务
+              </ConfirmButton>
+            </details>
           </div>
         </Card>
         <Card
