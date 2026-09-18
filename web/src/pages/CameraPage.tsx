@@ -19,6 +19,7 @@ import {
   useAPI,
 } from "../api";
 import { useViewState } from "../lib/view-state";
+import { MimoPreview } from "../components/mimo-preview";
 import type {
   CameraPreset,
   CameraStatus,
@@ -140,7 +141,7 @@ export function CameraPage() {
     <>
       <PageHeader
         title="相机"
-        description="使用相机原生录像控制和状态，按需打开高级独立采集。"
+        description="复用相机原生录像控制，并同步 Mimo 的实时画面。"
         actions={
           <Button
             variant="outline"
@@ -196,8 +197,8 @@ export function CameraPage() {
                 <dd className="mt-1">{nativeRecordingLabel(native.data)}</dd>
               </div>
               <div>
-                <dt className="text-muted-foreground">原生实时预览</dt>
-                <dd className="mt-1">未接入</dd>
+                <dt className="text-muted-foreground">网页预览</dt>
+                <dd className="mt-1">下方连接 Mimo 画面</dd>
               </div>
             </dl>
             <p className="mt-3 text-xs text-muted-foreground">
@@ -235,7 +236,7 @@ export function CameraPage() {
               </Button>
             </div>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              沿用相机当前拍摄设置，录像由相机保存。原生预览和拍照暂未接入网页。
+              沿用相机当前拍摄设置，录像由相机保存。原生拍照暂未接入网页。
             </p>
             {nativeResult && (
               <div className="mt-4">
@@ -299,6 +300,15 @@ export function CameraPage() {
           </>
         )}
       </Card>
+      <div className="mt-6">
+        <MimoPreview
+          enabled={
+            native.data?.service_state === "running" &&
+            capture.data?.state === "stopped" &&
+            !capture.data?.reboot_required
+          }
+        />
+      </div>
       <details
         open={advancedOpen}
         onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}

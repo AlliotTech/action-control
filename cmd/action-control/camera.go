@@ -51,6 +51,7 @@ type cameraRun struct {
 }
 type cameraController struct {
 	app          *App
+	mimoPreview  *mimoPreviewController
 	operation    sync.Mutex
 	mu           sync.Mutex
 	run          *cameraRun
@@ -381,6 +382,12 @@ func (c *cameraController) start(w http.ResponseWriter, r *http.Request) {
 		c.writeScreenState()
 		jsonError(w, 502, "camera_start_failed", err)
 	}
+	if c.mimoPreview != nil {
+		if err = c.mimoPreview.stop(); err != nil {
+			fail(err)
+			return
+		}
+	}
 	if _, err = stopNativeServices(c.app, data.TakeoverNative); err != nil {
 		fail(err)
 		return
@@ -603,6 +610,7 @@ func (c *cameraController) snapshot(w http.ResponseWriter, r *http.Request) {
 }
 func RegisterCamera(mux *http.ServeMux, a *App) (func() error, error) {
 	c := &cameraController{app: a, state: "stopped", config: a.Config.Read()}
+	c.mimoPreview = newMimoPreview(c)
 	if a.RequireDevice() == nil && a.ScreenRequired() {
 		if err := c.ensureScreens(); err != nil {
 			return nil, err
@@ -615,6 +623,10 @@ func RegisterCamera(mux *http.ServeMux, a *App) (func() error, error) {
 	})
 	nativeRecording := &nativeRecordingController{camera: c}
 	mux.HandleFunc("POST /api/native_recording", nativeRecording.handle)
+	mux.HandleFunc("GET /api/mimo_preview_status", func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, 200, c.mimoPreview.status())
+	})
+	mux.HandleFunc("GET /api/mimo_preview_stream", c.mimoPreview.stream)
 	mux.HandleFunc("POST /api/camera_start", c.start)
 	mux.HandleFunc("GET /api/camera_presets", func(w http.ResponseWriter, r *http.Request) {
 		preset, err := readCameraPreset(a)
@@ -656,6 +668,10 @@ func RegisterCamera(mux *http.ServeMux, a *App) (func() error, error) {
 			jsonError(w, 409, "camera_running", errors.New("stop capture first"))
 			return
 		}
+		if err := c.mimoPreview.stop(); err != nil {
+			jsonError(w, 503, "mimo_preview_busy", err)
+			return
+		}
 		services, err := stopNativeServices(a, data.TakeoverNative)
 		if err == nil {
 			err = c.ensureScreens()
@@ -670,7 +686,7 @@ func RegisterCamera(mux *http.ServeMux, a *App) (func() error, error) {
 	return func() error {
 		c.operation.Lock()
 		defer c.operation.Unlock()
-		err := c.stop()
+		err := errors.Join(c.mimoPreview.stop(), c.stop())
 		if c.screenCancel != nil {
 			c.screenCancel()
 		}

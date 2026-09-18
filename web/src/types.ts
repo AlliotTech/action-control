@@ -85,6 +85,26 @@ export interface NativeCameraStatus {
   reason?: string;
 }
 export type NativeRecordingAction = "start_recording" | "stop_recording";
+export interface MimoPreviewStatus {
+  source: "native_mimo_mirror";
+  requires_mimo: true;
+  state: "idle" | "waiting" | "streaming" | "stopping" | "error";
+  clients: number;
+  bytes: number;
+  last_frame_at?: string;
+  clock_corrections: number;
+  stats: {
+    video_packets: number;
+    complete_frames: number;
+    output_frames: number;
+    skipped_frames: number;
+    incomplete_frames: number;
+    duplicate_packets: number;
+    discontinuities: number;
+    native_clock_resets: number;
+  };
+  error?: string;
+}
 export interface NativeRecordingResult {
   source: "native_binder";
   request_id: string;

@@ -29,7 +29,8 @@ type NativeCameraService struct {
 }
 
 // Service liveness does not establish recording or preview state. Recording is
-// filled only by the native Binder reader; preview still has no verified adapter.
+// filled only by the native Binder reader. Independent preview subscription is
+// unverified; the passive Mimo mirror reports its own separate transport status.
 type NativeCameraStatus struct {
 	Source            string                  `json:"source"`
 	ServiceSource     string                  `json:"service_source"`
