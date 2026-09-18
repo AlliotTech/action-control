@@ -28,26 +28,30 @@ type NativeCameraService struct {
 	MainPID     int    `json:"main_pid"`
 }
 
-// Service liveness does not establish recording or preview state. Keep those
-// values unknown until a native camera protocol adapter supplies real evidence.
+// Service liveness does not establish recording or preview state. Recording is
+// filled only by the native Binder reader; preview still has no verified adapter.
 type NativeCameraStatus struct {
-	Source           string                `json:"source"`
-	ServiceState     string                `json:"service_state"`
-	Recording        *bool                 `json:"recording"`
-	Previewing       *bool                 `json:"previewing"`
-	ControlAvailable bool                  `json:"control_available"`
-	PreviewAvailable bool                  `json:"preview_available"`
-	Services         []NativeCameraService `json:"services"`
-	ObservedAt       string                `json:"observed_at"`
-	Reason           string                `json:"reason,omitempty"`
+	Source           string                  `json:"source"`
+	ServiceSource    string                  `json:"service_source"`
+	ServiceState     string                  `json:"service_state"`
+	NativeState      NativeCameraObservation `json:"native_state"`
+	Recording        *bool                   `json:"recording"`
+	Previewing       *bool                   `json:"previewing"`
+	ControlAvailable bool                    `json:"control_available"`
+	PreviewAvailable bool                    `json:"preview_available"`
+	Services         []NativeCameraService   `json:"services"`
+	ObservedAt       string                  `json:"observed_at"`
+	Reason           string                  `json:"reason,omitempty"`
 }
 
 func emptyNativeCameraStatus() NativeCameraStatus {
 	return NativeCameraStatus{
-		Source:       "systemd",
-		ServiceState: "unknown",
-		Services:     []NativeCameraService{},
-		ObservedAt:   time.Now().UTC().Format(time.RFC3339),
+		Source:        "systemd",
+		ServiceSource: "systemd",
+		ServiceState:  "unknown",
+		NativeState:   nativeObservationError("unavailable", "尚未读取原生拍摄状态。"),
+		Services:      []NativeCameraService{},
+		ObservedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
 }
 
@@ -124,6 +128,7 @@ func readNativeCameraStatus(ctx context.Context, a *App) NativeCameraStatus {
 	if err := a.RequireDevice(); err != nil {
 		status.ServiceState = "unavailable"
 		status.Reason = "仅在相机上读取原生服务状态；本地模式不连接硬件。"
+		status.NativeState = nativeObservationError("unavailable", "本地模式不连接相机硬件。")
 		return status
 	}
 	args := []string{"show", "-p", "Id", "-p", "LoadState", "-p", "ActiveState", "-p", "SubState", "-p", "MainPID"}
@@ -132,7 +137,9 @@ func readNativeCameraStatus(ctx context.Context, a *App) NativeCameraStatus {
 	if err != nil {
 		status.ServiceState = "unknown"
 		status.Reason = "原生服务状态读取未完成：" + err.Error()
+		return status
 	}
+	addNativeCameraObservation(ctx, a, &status)
 	return status
 }
 
@@ -153,7 +160,7 @@ func runNativeCameraStatus(w io.Writer) error {
 	if status.ServiceState == "unknown" || status.ServiceState == "unavailable" {
 		return errors.New("native camera service status is unavailable or incomplete")
 	}
-	return nil
+	return nativeObservationDiagnosticError(status.NativeState)
 }
 
 var errNativeCameraProtected = errors.New("独立采集会停止原生相机、屏幕和 Mimo 通信服务；请在高级独立采集中明确允许接管")

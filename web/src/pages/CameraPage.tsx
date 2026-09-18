@@ -75,6 +75,17 @@ const nativeServiceLabels: Record<string, string> = {
   "dji_sw_uav.service": "Mimo 通信服务",
 };
 
+function nativeRecordingLabel(status: NativeCameraStatus) {
+  if (status.recording === true) return "录像中";
+  if (status.recording === false) return "未录像";
+  if (status.native_state.status === "ok")
+    return `状态待识别（代码 ${status.native_state.record_state}）`;
+  if (status.native_state.status === "unsupported_firmware")
+    return "当前固件尚未适配";
+  if (status.service_state === "unavailable") return "本地模式不可用";
+  return "未知";
+}
+
 export function CameraPage() {
   const native = useAPI<NativeCameraStatus>(
     "native_camera_status",
@@ -92,7 +103,7 @@ export function CameraPage() {
     <>
       <PageHeader
         title="相机"
-        description="查看原生服务状态，按需使用高级独立采集。"
+        description="读取相机原生录像状态，按需使用高级独立采集。"
         actions={
           <Button
             variant="outline"
@@ -145,16 +156,20 @@ export function CameraPage() {
             <dl className="mt-5 grid grid-cols-2 gap-4 text-sm">
               <div>
                 <dt className="text-muted-foreground">原生录像状态</dt>
-                <dd className="mt-1">未接入</dd>
+                <dd className="mt-1">{nativeRecordingLabel(native.data)}</dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">原生实时预览</dt>
                 <dd className="mt-1">未接入</dd>
               </div>
             </dl>
+            <p className="mt-3 text-xs text-muted-foreground">
+              {native.data.native_state.status === "ok"
+                ? `相机原生状态 · 最近读取 ${new Date(native.data.native_state.observed_at!).toLocaleTimeString()} · 每 5 秒刷新`
+                : "暂时无法读取原生录像状态，稍后自动重试。"}
+            </p>
             <p className="mt-5 text-sm leading-6 text-muted-foreground">
-              网页原生预览和拍摄控制尚未接入，请继续使用相机或 Mimo
-              操作。服务运行状态无法判断当前是否正在录像或预览。
+              网页原生预览和拍摄控制尚未接入，请继续使用相机或 Mimo 操作。
             </p>
             {native.data.services.length > 0 && (
               <details className="mt-5 rounded-lg border p-3">
@@ -179,6 +194,11 @@ export function CameraPage() {
                 <p className="mt-4 text-xs text-muted-foreground">
                   Mimo 通信服务运行不代表手机已连接。
                 </p>
+                {native.data.native_state.reason && (
+                  <p className="mt-3 break-words text-xs text-muted-foreground">
+                    录像状态读取：{native.data.native_state.reason}
+                  </p>
+                )}
               </details>
             )}
           </>

@@ -25,16 +25,17 @@ const (
 	NetworkServiceName = "action-control-network.service"
 )
 
-var Version = "0.1.8"
+var Version = "0.1.9"
 
 type App struct {
-	Root    string
-	Dir     string
-	RunDir  string
-	Ctx     context.Context
-	Config  *ConfigStore
-	Restart chan struct{}
-	cancel  context.CancelFunc
+	Root         string
+	Dir          string
+	RunDir       string
+	Ctx          context.Context
+	Config       *ConfigStore
+	Restart      chan struct{}
+	cancel       context.CancelFunc
+	nativeReader nativeStateReader
 }
 
 func appAt(root string) (*App, error) {

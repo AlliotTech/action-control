@@ -52,8 +52,22 @@ export type NativeServiceState =
   | "unknown"
   | "unavailable";
 export interface NativeCameraStatus {
-  source: "systemd";
+  source: "systemd" | "native_binder";
+  service_source: "systemd";
   service_state: NativeServiceState;
+  native_state: {
+    status:
+      | "ok"
+      | "unavailable"
+      | "unsupported_firmware"
+      | "busy"
+      | "error"
+      | "timeout";
+    record_state: number | null;
+    capture_state: number | null;
+    observed_at?: string;
+    reason?: string;
+  };
   recording: boolean | null;
   previewing: boolean | null;
   control_available: boolean;
