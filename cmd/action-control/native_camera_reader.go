@@ -73,6 +73,10 @@ func decodeNativeObservation(data []byte) (NativeCameraObservation, error) {
 func probeNativeCamera(ctx context.Context, a *App) NativeCameraObservation {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	if err := a.nativeIO.acquire(ctx); err != nil {
+		return nativeObservationError("timeout", "等待原生相机访问超时或已取消。")
+	}
+	defer a.nativeIO.release()
 	output, err := a.Run(ctx, 3*time.Second, "python3", "-I", "-B", "-c", nativeCameraReaderScript)
 	if ctx.Err() != nil {
 		return nativeObservationError("timeout", "原生状态读取超时或已取消。")
@@ -111,6 +115,17 @@ type nativeStateReader struct {
 	pid         int
 	observation NativeCameraObservation
 	expires     time.Time
+	generation  uint64
+}
+
+// A command invalidates even a read whose subprocess has finished but whose
+// goroutine has not yet published its cache entry.
+func (reader *nativeStateReader) invalidate() {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	reader.generation++
+	reader.expires = time.Time{}
+	reader.observation = NativeCameraObservation{}
 }
 
 // A shared observation prevents tabs and concurrent refreshes from creating a
@@ -130,6 +145,7 @@ func (reader *nativeStateReader) read(ctx, lifetime context.Context, pid int, pr
 		}
 		if reader.inflight == nil {
 			reader.inflight = make(chan struct{})
+			generation := reader.generation
 			go func() {
 				observation := probe(lifetime)
 				ttl := 2 * time.Second
@@ -137,8 +153,10 @@ func (reader *nativeStateReader) read(ctx, lifetime context.Context, pid int, pr
 					ttl = 30 * time.Second
 				}
 				reader.mu.Lock()
-				reader.observation, reader.pid = observation, pid
-				reader.expires = time.Now().Add(ttl)
+				if reader.generation == generation {
+					reader.observation, reader.pid = observation, pid
+					reader.expires = time.Now().Add(ttl)
+				}
 				close(reader.inflight)
 				reader.inflight = nil
 				reader.mu.Unlock()
@@ -166,6 +184,8 @@ func addNativeCameraObservation(ctx context.Context, a *App, status *NativeCamer
 		status.Recording = nativeRecording(status.NativeState)
 		if status.NativeState.Status == "ok" {
 			status.Source = "native_binder"
+			status.ControlAvailable = true
+			status.RecordingControls = nativeRecordingControls(status.NativeState)
 		}
 		return
 	}

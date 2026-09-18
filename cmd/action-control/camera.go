@@ -613,6 +613,8 @@ func RegisterCamera(mux *http.ServeMux, a *App) (func() error, error) {
 	mux.HandleFunc("GET /api/native_camera_status", func(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 200, readNativeCameraStatus(r.Context(), a))
 	})
+	nativeRecording := &nativeRecordingController{camera: c}
+	mux.HandleFunc("POST /api/native_recording", nativeRecording.handle)
 	mux.HandleFunc("POST /api/camera_start", c.start)
 	mux.HandleFunc("GET /api/camera_presets", func(w http.ResponseWriter, r *http.Request) {
 		preset, err := readCameraPreset(a)

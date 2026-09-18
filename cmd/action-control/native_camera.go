@@ -31,17 +31,18 @@ type NativeCameraService struct {
 // Service liveness does not establish recording or preview state. Recording is
 // filled only by the native Binder reader; preview still has no verified adapter.
 type NativeCameraStatus struct {
-	Source           string                  `json:"source"`
-	ServiceSource    string                  `json:"service_source"`
-	ServiceState     string                  `json:"service_state"`
-	NativeState      NativeCameraObservation `json:"native_state"`
-	Recording        *bool                   `json:"recording"`
-	Previewing       *bool                   `json:"previewing"`
-	ControlAvailable bool                    `json:"control_available"`
-	PreviewAvailable bool                    `json:"preview_available"`
-	Services         []NativeCameraService   `json:"services"`
-	ObservedAt       string                  `json:"observed_at"`
-	Reason           string                  `json:"reason,omitempty"`
+	Source            string                  `json:"source"`
+	ServiceSource     string                  `json:"service_source"`
+	ServiceState      string                  `json:"service_state"`
+	NativeState       NativeCameraObservation `json:"native_state"`
+	Recording         *bool                   `json:"recording"`
+	Previewing        *bool                   `json:"previewing"`
+	ControlAvailable  bool                    `json:"control_available"`
+	RecordingControls NativeRecordingControls `json:"recording_controls"`
+	PreviewAvailable  bool                    `json:"preview_available"`
+	Services          []NativeCameraService   `json:"services"`
+	ObservedAt        string                  `json:"observed_at"`
+	Reason            string                  `json:"reason,omitempty"`
 }
 
 func emptyNativeCameraStatus() NativeCameraStatus {
@@ -123,7 +124,7 @@ func parseNativeCameraStatus(output string) NativeCameraStatus {
 	return status
 }
 
-func readNativeCameraStatus(ctx context.Context, a *App) NativeCameraStatus {
+func readNativeCameraServices(ctx context.Context, a *App) NativeCameraStatus {
 	status := emptyNativeCameraStatus()
 	if err := a.RequireDevice(); err != nil {
 		status.ServiceState = "unavailable"
@@ -139,7 +140,14 @@ func readNativeCameraStatus(ctx context.Context, a *App) NativeCameraStatus {
 		status.Reason = "原生服务状态读取未完成：" + err.Error()
 		return status
 	}
-	addNativeCameraObservation(ctx, a, &status)
+	return status
+}
+
+func readNativeCameraStatus(ctx context.Context, a *App) NativeCameraStatus {
+	status := readNativeCameraServices(ctx, a)
+	if status.Reason == "" {
+		addNativeCameraObservation(ctx, a, &status)
+	}
 	return status
 }
 

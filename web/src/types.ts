@@ -71,6 +71,7 @@ export interface NativeCameraStatus {
   recording: boolean | null;
   previewing: boolean | null;
   control_available: boolean;
+  recording_controls: { start: boolean; stop: boolean };
   preview_available: boolean;
   services: {
     unit: string;
@@ -82,6 +83,28 @@ export interface NativeCameraStatus {
   }[];
   observed_at: string;
   reason?: string;
+}
+export type NativeRecordingAction = "start_recording" | "stop_recording";
+export interface NativeRecordingResult {
+  source: "native_binder";
+  request_id: string;
+  action: NativeRecordingAction;
+  outcome:
+    | "confirmed"
+    | "already"
+    | "accepted"
+    | "blocked"
+    | "rejected"
+    | "not_sent"
+    | "unknown";
+  dispatched: boolean | null;
+  native_code: number | null;
+  before: { record_state: number; capture_state: number } | null;
+  after: { record_state: number; capture_state: number } | null;
+  message: string;
+  reason?: string;
+  completed_at: string;
+  replayed: boolean;
 }
 export interface CameraPreset {
   config: Pick<

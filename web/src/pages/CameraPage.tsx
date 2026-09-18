@@ -24,6 +24,8 @@ import type {
   CameraStatus,
   Config,
   NativeCameraStatus,
+  NativeRecordingAction,
+  NativeRecordingResult,
   NativeServiceState,
 } from "../types";
 import { Badge } from "@/components/ui/badge";
@@ -94,6 +96,41 @@ export function CameraPage() {
   );
   const capture = useAPI<CameraStatus>("camera_status", undefined, 3000);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [nativeAction, setNativeAction] =
+    useState<NativeRecordingAction | null>(null);
+  const [nativeResult, setNativeResult] =
+    useState<NativeRecordingResult | null>(null);
+  const [nativeError, setNativeError] = useState("");
+  const nativeBusy = useRef(false);
+
+  async function record(action: NativeRecordingAction) {
+    if (nativeBusy.current) return;
+    nativeBusy.current = true;
+    setNativeAction(action);
+    setNativeResult(null);
+    setNativeError("");
+    try {
+      // getRandomValues also works over the camera's plain HTTP connection.
+      const requestID = Array.from(
+        crypto.getRandomValues(new Uint8Array(16)),
+        (byte) => byte.toString(16).padStart(2, "0"),
+      ).join("");
+      setNativeResult(
+        await post<NativeRecordingResult>("native_recording", {
+          action,
+          request_id: requestID,
+        }),
+      );
+    } catch (error) {
+      setNativeError(
+        `录像请求未完整返回：${errorText(error)}。请先检查相机当前状态，再决定下一步操作。`,
+      );
+    } finally {
+      await invalidate("native_camera_status");
+      nativeBusy.current = false;
+      setNativeAction(null);
+    }
+  }
 
   useEffect(() => {
     if (capture.data && capture.data.state !== "stopped") setAdvancedOpen(true);
@@ -103,7 +140,7 @@ export function CameraPage() {
     <>
       <PageHeader
         title="相机"
-        description="读取相机原生录像状态，按需使用高级独立采集。"
+        description="使用相机原生录像控制和状态，按需打开高级独立采集。"
         actions={
           <Button
             variant="outline"
@@ -168,9 +205,67 @@ export function CameraPage() {
                 ? `相机原生状态 · 最近读取 ${new Date(native.data.native_state.observed_at!).toLocaleTimeString()} · 每 5 秒刷新`
                 : "暂时无法读取原生录像状态，稍后自动重试。"}
             </p>
-            <p className="mt-5 text-sm leading-6 text-muted-foreground">
-              网页原生预览和拍摄控制尚未接入，请继续使用相机或 Mimo 操作。
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Button
+                disabled={
+                  nativeAction !== null ||
+                  !native.data.control_available ||
+                  !native.data.recording_controls.start
+                }
+                onClick={() => void record("start_recording")}
+              >
+                <Play />
+                {nativeAction === "start_recording"
+                  ? "正在请求开始…"
+                  : "开始录像"}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={
+                  nativeAction !== null ||
+                  !native.data.control_available ||
+                  !native.data.recording_controls.stop
+                }
+                onClick={() => void record("stop_recording")}
+              >
+                <Square />
+                {nativeAction === "stop_recording"
+                  ? "正在请求停止…"
+                  : "停止录像"}
+              </Button>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              沿用相机当前拍摄设置，录像由相机保存。原生预览和拍照暂未接入网页。
             </p>
+            {nativeResult && (
+              <div className="mt-4">
+                <Notice
+                  tone={
+                    nativeResult.outcome === "confirmed" ||
+                    nativeResult.outcome === "already"
+                      ? "success"
+                      : "warning"
+                  }
+                >
+                  <span className="block">{nativeResult.message}</span>
+                  <span className="mt-1 block text-xs opacity-80">
+                    上次操作 ·{" "}
+                    {new Date(nativeResult.completed_at).toLocaleTimeString()}
+                  </span>
+                  {nativeResult.reason && (
+                    <details className="mt-2 text-xs">
+                      <summary className="cursor-pointer">查看操作详情</summary>
+                      <p className="mt-1">{nativeResult.reason}</p>
+                    </details>
+                  )}
+                </Notice>
+              </div>
+            )}
+            {nativeError && (
+              <div className="mt-4">
+                <Notice tone="warning">{nativeError}</Notice>
+              </div>
+            )}
             {native.data.services.length > 0 && (
               <details className="mt-5 rounded-lg border p-3">
                 <summary className="cursor-pointer text-sm font-medium">

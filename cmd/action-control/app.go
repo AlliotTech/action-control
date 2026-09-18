@@ -25,7 +25,7 @@ const (
 	NetworkServiceName = "action-control-network.service"
 )
 
-var Version = "0.1.9"
+var Version = "0.1.10"
 
 type App struct {
 	Root         string
@@ -36,6 +36,7 @@ type App struct {
 	Restart      chan struct{}
 	cancel       context.CancelFunc
 	nativeReader nativeStateReader
+	nativeIO     nativeCameraGate
 }
 
 func appAt(root string) (*App, error) {

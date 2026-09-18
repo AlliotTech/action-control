@@ -1,10 +1,12 @@
-"""One-shot read-only adapter for the verified AC204 camera client ABI.
+"""One-shot state/recording adapter for the verified AC204 camera client ABI.
 
 Executed by Action Control in an isolated Python process with an external
-deadline. No Python callbacks, camera setters, playback, or preview subscription.
+deadline. Recording requests are explicit; the default remains read-only.
+No Python callbacks, mode setters, capture, playback, or preview subscription.
 See docs/NATIVE_CAMERA_REUSE.md for the offline ABI and lifecycle evidence.
 """
 
+from contextlib import contextmanager
 import ctypes as C
 import hashlib
 import json
@@ -12,6 +14,7 @@ import os
 import platform
 import socket
 import sys
+import time
 
 
 LIBRARIES = {
@@ -76,7 +79,8 @@ def checked(name, fn, *args):
         raise ProbeError("error", "%s returned %d." % (name, rc))
 
 
-def query(lib):
+@contextmanager
+def camera_connection(lib):
     manager = C.c_void_p()
     device = C.c_void_p()
     params = CreateParams()  # Both optional callback fields are null.
@@ -93,40 +97,53 @@ def query(lib):
         checked("connect", lib.camera_manager_connect_camera, manager, 0, C.byref(device))
         if not device.value:
             raise ProbeError("error", "connect returned an empty camera.")
-        result = {"camera_id": 0, "camera_amount": 1}
-        for field, fn in (
-            ("record_state", lib.camera_get_record_state),
-            ("capture_state", lib.camera_get_capture_state),
-        ):
-            value = C.c_int(-2147483648)
-            checked(field, fn, device, C.byref(value))
-            if value.value == -2147483648:
-                raise ProbeError("error", field + " was not written.")
-            result[field] = value.value
-        return result
+        yield device
     finally:
         # This API disconnects this manager's devices, removes its own listeners,
         # releases client objects, and frees wrappers. No handle offsets are used.
         checked("destroy", lib.camera_manager_destroy, manager)
 
 
+def read_state(lib, device):
+    result = {}
+    for field, fn in (
+        ("record_state", lib.camera_get_record_state),
+        ("capture_state", lib.camera_get_capture_state),
+    ):
+        value = C.c_int(-2147483648)
+        checked(field, fn, device, C.byref(value))
+        if value.value == -2147483648:
+            raise ProbeError("error", field + " was not written.")
+        result[field] = value.value
+    return result
+
+
+def query(lib):
+    with camera_connection(lib) as device:
+        return {"camera_id": 0, "camera_amount": 1, **read_state(lib, device)}
+
+
+@contextmanager
+def native_library():
+    # Hashes are checked before dlopen or any private native call.
+    check_environment()
+    # Shared by readers and recording requests, including other CLI processes.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as guard:
+        try:
+            guard.bind("\0action-control.native-camera-state.v1")
+        except OSError as exc:
+            import errno
+
+            if exc.errno == errno.EADDRINUSE:
+                raise ProbeError("busy", "A native camera client is already active.") from exc
+            raise
+        yield bind_library()
+
+
 def observe():
     result = {"schema": 1, "status": "error"}
     try:
-        # Hashes are checked before dlopen or any private native call.
-        check_environment()
-        # A Linux abstract socket limits concurrent readers across server and
-        # CLI processes without creating configuration or lock files.
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as guard:
-            try:
-                guard.bind("\0action-control.native-camera-state.v1")
-            except OSError as exc:
-                import errno
-
-                if exc.errno == errno.EADDRINUSE:
-                    raise ProbeError("busy", "A native state reader is already active.") from exc
-                raise
-            lib = bind_library()
+        with native_library() as lib:
             result.update(query(lib))
         result["status"] = "ok"
     except ProbeError as exc:
@@ -136,13 +153,70 @@ def observe():
     return result
 
 
+def record(action):
+    result = {
+        "schema": 1, "action": action, "outcome": "not_sent",
+        "dispatched": False, "native_code": None,
+        "before": None, "after": None, "reason": "",
+    }
+    # No dynamic symbol name or unverified operation can reach the native API.
+    symbols = {
+        "start_recording": ("camera_start_recording", 1),
+        "stop_recording": ("camera_stop_recording", 3),
+    }
+    if action not in symbols:
+        result["reason"] = "Unsupported recording action."
+        return result
+    name, target = symbols[action]
+    try:
+        with native_library() as lib:
+            fn = getattr(lib, name)
+            fn.argtypes, fn.restype = [C.c_void_p], C.c_int
+            with camera_connection(lib) as device:
+                before = read_state(lib, device)
+                result["before"] = before
+                if before["record_state"] == target:
+                    result.update(outcome="already", after=before)
+                elif (
+                    before["record_state"] != (3 if target == 1 else 1)
+                    or (target == 1 and before["capture_state"] != 0)
+                ):
+                    result.update(outcome="blocked", reason="Native camera is not in a verified state for this action.")
+                else:
+                    # Set uncertainty BEFORE the call: a native request cannot
+                    # be undone by killing this process, and must not be retried.
+                    result.update(dispatched=True, outcome="unknown")
+                    rc = fn(device)
+                    result["native_code"] = rc
+                    if rc != 0:
+                        result.update(outcome="rejected", reason="%s returned %d." % (name, rc))
+                    else:
+                        result["outcome"] = "accepted"
+                        # Only observe; no toggle, retry, mode change, or
+                        # compensating stop. Native service owns all transitions.
+                        deadline = time.monotonic() + 2.0
+                        while True:
+                            result["after"] = read_state(lib, device)
+                            if result["after"]["record_state"] == target:
+                                result["outcome"] = "confirmed"
+                                break
+                            if time.monotonic() >= deadline:
+                                break
+                            time.sleep(0.1)
+    except (ProbeError, OSError, AttributeError) as exc:
+        result["outcome"] = "unknown" if result["dispatched"] else "not_sent"
+        result["reason"] = str(exc)
+        result["after"] = None
+    return result
+
+
 def main():
     # Native logging must not be mistaken for the JSON protocol. Keep the saved
     # output descriptor private; vendor output goes to the bounded stderr pipe.
     output = os.dup(1)
     os.dup2(2, 1)
     try:
-        result = observe()
+        result = observe() if len(sys.argv) == 1 else record(sys.argv[1] if len(sys.argv) == 2 else "")
         os.write(output, (json.dumps(result, separators=(",", ":")) + "\n").encode())
     finally:
         os.close(output)
