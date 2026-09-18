@@ -169,7 +169,7 @@ export function OverviewPage() {
                       closed: "已关闭",
                       native: "原生管理",
                       unknown: "未知",
-                    }[wifi.data.mode]
+                    }[wifi.data.role ?? wifi.data.mode]
                   }
                 </Badge>
               </div>

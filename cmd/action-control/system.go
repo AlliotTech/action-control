@@ -412,6 +412,10 @@ func RegisterSystem(mux *http.ServeMux, a *App) (func() error, error) {
 		jsonResponse(w, 200, map[string]string{"status": status})
 	})
 	mux.HandleFunc("POST /api/dji_network", func(w http.ResponseWriter, r *http.Request) {
+		if err := requireManagedNetwork(a); err != nil {
+			networkJSONError(w, 409, "network_control", err)
+			return
+		}
 		var p struct {
 			Action  string `json:"action"`
 			Confirm bool   `json:"confirm"`
@@ -428,7 +432,7 @@ func RegisterSystem(mux *http.ServeMux, a *App) (func() error, error) {
 			return
 		}
 		if err := queueNetwork(a, networkRequest{Action: "native_" + p.Action}); err != nil {
-			jsonError(w, 409, "network_operation", err)
+			networkJSONError(w, 409, "network_operation", err)
 			return
 		}
 		jsonResponse(w, 202, map[string]any{"ok": true, "status": "queued"})

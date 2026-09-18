@@ -100,6 +100,7 @@ func TestNativeHotspotBandMapping(t *testing.T) {
 		channel      int
 	}{{"0", "2.4G", 6}, {"1", "5G", 44}, {"2", "5G", 149}} {
 		a, _, _ := testInstallation(t)
+		testNetworkControl(t, a, networkControlManaged)
 		data := []byte("ssid=Action\npasswd=password\nband=" + tc.native + "\nchannel=" + strconv.Itoa(tc.channel) + "\nchannel_auto=1\ncountry=CN\n")
 		putTestFile(t, a.Path(hotspotPath), data, 0600)
 		h, original, err := readHotspot(a)

@@ -66,8 +66,11 @@ export function NetworkPage() {
     5000,
   );
   const status = useAPI<WiFiStatus>("wifi_status", undefined, 3000);
+  const config = useAPI<Config>("config");
+  const managed = config.data?.network_control === "managed";
   const hardware = health.data?.device === true && !health.isError;
-  const canChange = hardware && Boolean(status.data) && !status.isError;
+  const canChange =
+    managed && hardware && Boolean(status.data) && !status.isError;
   const httpPort = health.data?.http_port || "8080";
   const hotspotAddress = `http://192.168.2.1:${httpPort}/#/network`;
   const [reconnect, setReconnect] = useViewState<{
@@ -77,9 +80,16 @@ export function NetworkPage() {
     previous: string;
     time: string;
   } | null>("network.reconnect.v2", null);
-  const known = useAPI<{ networks: KnownNetwork[] }>("known_list");
-  const hotspot = useAPI<HotspotConfig>("hotspot_config");
-  const config = useAPI<Config>("config");
+  const known = useQuery<{ networks: KnownNetwork[] }>({
+    queryKey: ["known_list"],
+    queryFn: ({ signal }) => get("known_list", undefined, signal),
+    enabled: managed,
+  });
+  const hotspot = useQuery<HotspotConfig>({
+    queryKey: ["hotspot_config"],
+    queryFn: ({ signal }) => get("hotspot_config", undefined, signal),
+    enabled: managed,
+  });
   const queryClient = useQueryClient();
   const scan = useQuery<{ networks: WiFiNetwork[] }>({
     queryKey: ["wifi_scan"],
@@ -106,6 +116,15 @@ export function NetworkPage() {
   const [apLoaded, setAPLoaded] = useState(false);
   const [hiddenSuccess, setHiddenSuccess] = useState("");
   const previousMode = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!managed) {
+      setConnect(false);
+      setConfirmHotspot(false);
+      setPassword("");
+      setAPPassword("");
+    }
+  }, [managed]);
 
   function loadHotspot(value: HotspotConfig) {
     setAPSSID(value.ssid);
@@ -173,7 +192,8 @@ export function NetworkPage() {
         encrypted: network.encrypted,
         saved: Boolean(remembered),
         connected:
-          status.data?.mode === "client" && status.data.ssid === network.ssid,
+          (status.data?.role ?? status.data?.mode) === "client" &&
+          status.data?.ssid === network.ssid,
         lastConnected: remembered?.last_connected,
       });
     }
@@ -186,7 +206,8 @@ export function NetworkPage() {
           encrypted: network.has_password,
           saved: true,
           connected:
-            status.data?.mode === "client" && status.data.ssid === network.ssid,
+            (status.data?.role ?? status.data?.mode) === "client" &&
+            status.data?.ssid === network.ssid,
           lastConnected: network.last_connected,
         });
       }
@@ -202,6 +223,7 @@ export function NetworkPage() {
     known.data?.networks,
     scan.data?.networks,
     status.data?.mode,
+    status.data?.role,
     status.data?.ssid,
   ]);
 
@@ -284,22 +306,25 @@ export function NetworkPage() {
   }
 
   const mode = status.data?.mode;
+  const role = status.data?.role ?? mode;
   const primaryState = !status.data
     ? "未取得状态"
-    : mode === "hotspot"
+    : role === "hotspot"
       ? "热点运行中"
-      : mode === "native"
-        ? "DJI 原生网络管理中"
-        : mode === "closed"
-          ? "无线已关闭"
-          : (stateNames[status.data.state] ?? "状态未知");
+      : role === "closed"
+        ? "无线已关闭"
+        : (stateNames[status.data.state] ?? "状态未知");
   const operation = status.data?.operation;
 
   return (
     <>
       <PageHeader
         title="网络"
-        description="查看当前连接，连接 WiFi 或开启相机热点。"
+        description={
+          managed
+            ? "独立管理无线连接与热点。"
+            : "沿用相机原生网络访问控制台、相册和文件。"
+        }
         actions={
           <Button
             variant="outline"
@@ -314,10 +339,11 @@ export function NetworkPage() {
       <div className="mb-5 space-y-3">
         {error && <Notice tone="error">{error}</Notice>}
         {message && <Notice tone="success">{message}</Notice>}
+        {config.error && <Notice tone="error">{config.error.message}</Notice>}
         {status.error && hardware && (
           <Notice tone="error">无线状态不可用：{status.error.message}</Notice>
         )}
-        {operation?.status === "failed" && (
+        {managed && operation?.status === "failed" && (
           <Notice
             tone={
               operation.recovery_status === "restored" ? "warning" : "error"
@@ -334,7 +360,7 @@ export function NetworkPage() {
             </details>
           </Notice>
         )}
-        {operating && (
+        {managed && operating && (
           <Notice>
             <Spinner /> 网络操作
             {operation?.recovery_status === "restoring"
@@ -345,13 +371,14 @@ export function NetworkPage() {
             ，请勿重复提交。
           </Notice>
         )}
-        {operation?.status === "succeeded" &&
+        {managed &&
+          operation?.status === "succeeded" &&
           hiddenSuccess !== operation.id && (
             <Notice tone="success">网络操作已完成。</Notice>
           )}
       </div>
 
-      {reconnect && (
+      {managed && reconnect && (
         <Card className="mb-5" title="切换后的访问方式">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 space-y-2 text-sm">
@@ -425,6 +452,11 @@ export function NetworkPage() {
             <Wifi className="size-7 shrink-0 text-primary" />
             <div className="min-w-0">
               <p className="text-lg font-semibold">{primaryState}</p>
+              {(status.data?.owner === "native" || mode === "native") && (
+                <Badge className="mt-1" variant="secondary">
+                  DJI 原生管理
+                </Badge>
+              )}
               <p className="break-all text-sm text-muted-foreground">
                 {status.data?.ssid || "未连接网络"}
               </p>
@@ -443,16 +475,9 @@ export function NetworkPage() {
             )}
           </div>
         </div>
-        {mode === "native" && (
+        {!managed && (
           <p className="mt-4 text-sm text-muted-foreground">
-            无线由 DJI 原生服务管理。要更改原生服务，请前往{" "}
-            <a
-              className="text-primary underline underline-offset-4"
-              href="#/system"
-            >
-              系统设置
-            </a>
-            。
+            请使用相机本身的无线设置。手机或电脑连接相机原生热点后，可通过上方地址访问控制台；相机已有局域网连接时也可直接使用。
           </p>
         )}
         <details className="mt-5 border-t pt-4 text-sm">
@@ -489,450 +514,522 @@ export function NetworkPage() {
         </details>
       </Card>
 
-      <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
-        <Card
-          title="连接 WiFi"
-          description="选择已保存网络，或扫描附近网络。切换网络可能使当前页面断线。"
-        >
-          <div className="mb-4 flex flex-wrap gap-2">
-            <Button
-              disabled={!canChange || scan.isFetching || busy || operating}
-              onClick={() => void scan.refetch()}
-            >
-              <RefreshCw />
-              {scan.isFetching ? "扫描中…" : "扫描附近网络"}
-            </Button>
-            <Button
-              variant="outline"
-              disabled={!canChange || busy || operating}
-              onClick={() => showConnect()}
-            >
-              连接其他网络
-            </Button>
-          </div>
-          {scan.error && (
-            <Notice tone="error">扫描失败：{scan.error.message}</Notice>
-          )}
-          {known.isPending ? (
-            <Spinner />
-          ) : known.error ? (
-            <Notice tone="error">{known.error.message}</Notice>
-          ) : !networks.length ? (
-            <EmptyState
-              title="尚无已保存网络"
-              description="扫描附近网络，或手动输入网络名称。"
-            />
-          ) : (
-            <div className="divide-y">
-              {networks.map((network) => (
-                <div
-                  key={network.ssid || network.bssid}
-                  className="flex items-center justify-between gap-3 py-4"
-                >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <Signal className="size-5 shrink-0 text-primary" />
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="break-all text-sm font-medium">
-                          {network.ssid || "隐藏网络"}
-                        </p>
-                        {network.connected && <Badge>当前连接</Badge>}
-                        {network.saved && (
-                          <Badge variant="secondary">已保存</Badge>
-                        )}
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {network.signal == null
-                          ? "信号未知"
-                          : `${network.signal} dBm`}{" "}
-                        · {network.encrypted ? "需要密码" : "开放网络"}
-                      </p>
-                      {(network.bssid || network.band) && (
-                        <details className="mt-2 text-xs text-muted-foreground">
-                          <summary className="cursor-pointer">网络详情</summary>
-                          <p className="mt-1 font-mono">
-                            {network.bssid || "BSSID 未知"}
-                            {network.band ? ` · ${network.band}` : ""}
-                          </p>
-                        </details>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    {!network.connected && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={!canChange || busy || operating}
-                        onClick={() => showConnect(network)}
-                      >
-                        连接
-                      </Button>
-                    )}
-                    {network.saved && (
-                      <details className="relative">
-                        <summary className="cursor-pointer list-none rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-accent">
-                          更多
-                        </summary>
-                        <div className="absolute right-0 z-10 mt-1 rounded-md border bg-popover p-1 shadow-md">
-                          <ConfirmButton
-                            title="忘记此网络？"
-                            description={`将删除「${network.ssid}」的保存凭据，不会主动断开当前连接。`}
-                            disabled={!canChange || busy || operating}
-                            onConfirm={async () => {
-                              await post("known_forget", {
-                                ssid: network.ssid,
-                                confirm: true,
-                              });
-                              await refresh();
-                            }}
-                          >
-                            <Trash2 /> 忘记
-                          </ConfirmButton>
-                        </div>
-                      </details>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          <details className="mt-5 border-t pt-4">
-            <summary className="cursor-pointer text-sm font-medium">
-              高级设置
-            </summary>
-            <label className="mt-4 flex items-start gap-3 text-sm">
-              <Checkbox
-                className="mt-1"
-                checked={config.data?.auto_connect ?? false}
-                disabled={!config.data || busy}
-                onCheckedChange={async (checked) => {
-                  setBusy(true);
-                  setError("");
-                  try {
-                    await post("auto_connect", { enabled: checked === true });
-                    await refresh();
-                    setMessage("自动连接设置已保存，下次整机启动时生效。");
-                  } catch (cause) {
-                    setError(errorText(cause));
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              />
-              <span>
-                启动时扫描并连接最近使用的已保存网络
-                <span className="mt-1 block text-xs text-muted-foreground">
-                  关闭时不接管 DJI 原生网络；下次整机启动时生效。
-                </span>
-              </span>
-            </label>
-            {config.error && (
-              <div className="mt-3">
-                <Notice tone="error">{config.error.message}</Notice>
-              </div>
-            )}
-          </details>
-        </Card>
-
-        <Card
-          title="相机热点"
-          description="配置并开启供手机或电脑连接的相机热点，不提供互联网转发。"
-        >
-          {hotspot.error && (
-            <Notice tone="error">
-              无法读取热点配置：{hotspot.error.message}
-            </Notice>
-          )}
-          <form
-            className="space-y-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              setConfirmHotspot(true);
+      <details className="mb-5 rounded-xl border bg-card px-6 py-5 shadow-sm">
+        <summary className="cursor-pointer font-semibold">高级网络管理</summary>
+        <div className="mt-4 max-w-2xl space-y-3">
+          <Label htmlFor="network-control">管理方式</Label>
+          <Select
+            value={config.data?.network_control ?? "native"}
+            disabled={!config.data || busy || operating}
+            onValueChange={async (value) => {
+              setBusy(true);
+              setError("");
+              setMessage("");
+              try {
+                await post("config", { network_control: value });
+                await refresh();
+                setMessage(
+                  value === "native"
+                    ? "已使用原生网络。"
+                    : "已启用独立管理，执行网络操作时生效。",
+                );
+              } catch (cause) {
+                setError(errorText(cause));
+              } finally {
+                setBusy(false);
+              }
             }}
           >
-            <div>
-              <Label htmlFor="hotspot-ssid">热点名称</Label>
-              <Input
-                id="hotspot-ssid"
-                value={apSSID}
-                required
-                onChange={(event) => setAPSSID(event.target.value)}
-              />
-              <p className="mt-1 text-xs text-muted-foreground">
-                1–32 个 UTF-8 字节。
-              </p>
-            </div>
-            {!apOpen && (
-              <div>
-                <Label htmlFor="hotspot-password">新密码</Label>
-                <Input
-                  id="hotspot-password"
-                  type="password"
-                  autoComplete="new-password"
-                  placeholder={
-                    hotspot.data?.has_password
-                      ? "留空则保留当前密码"
-                      : "请输入热点密码"
-                  }
-                  value={apPassword}
-                  required={!hotspot.data?.has_password}
-                  onChange={(event) => setAPPassword(event.target.value)}
-                />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  8–63 字节或 64 位十六进制 PSK。
-                </p>
-              </div>
-            )}
-            <details className="border-t pt-4">
-              <summary className="cursor-pointer text-sm font-medium">
-                高级设置
-              </summary>
-              <div className="mt-4 space-y-4">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label htmlFor="hotspot-band">频段</Label>
-                    <Select
-                      value={band}
-                      onValueChange={(value) => {
-                        setBand(value);
-                        setChannel(value === "5G" ? "149" : "6");
-                      }}
-                    >
-                      <SelectTrigger id="hotspot-band" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="2.4G">2.4 GHz</SelectItem>
-                        <SelectItem value="5G">5 GHz</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label htmlFor="hotspot-channel">信道</Label>
-                    <Select value={channel} onValueChange={setChannel}>
-                      <SelectTrigger id="hotspot-channel" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(band === "5G"
-                          ? [
-                              36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108,
-                              112, 116, 120, 124, 128, 132, 136, 140, 144, 149,
-                              153, 157, 161, 165,
-                            ]
-                          : Array.from({ length: 14 }, (_, index) => index + 1)
-                        ).map((value) => (
-                          <SelectItem key={value} value={String(value)}>
-                            {value}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <p className="text-xs leading-5 text-muted-foreground">
-                  实际可用信道受固件、区域和无线环境约束。
-                </p>
-                <label className="flex items-center gap-3 text-sm">
-                  <Checkbox
-                    checked={apOpen}
-                    onCheckedChange={(checked) => {
-                      setAPOpen(checked === true);
-                      setAPPassword("");
-                    }}
-                  />
-                  开放热点（不设密码）
-                </label>
-                {apOpen && (
-                  <Notice tone="warning">
-                    开放热点没有 WiFi 加密，只应在可信环境使用。
-                  </Notice>
-                )}
-              </div>
-            </details>
-            <div className="flex flex-wrap items-center gap-2">
-              {(mode !== "hotspot" || apDirty) && (
-                <Button
-                  type="submit"
-                  disabled={!canChange || busy || operating || !hotspot.data}
-                >
-                  {mode === "hotspot" ? <Save /> : <Radio />}
-                  {mode === "hotspot" ? "保存并重启热点" : "保存并开启热点"}
-                </Button>
-              )}
-              {mode === "hotspot" && !apDirty && <Badge>热点正在运行</Badge>}
-              {apDirty && hotspot.data && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  disabled={busy}
-                  onClick={() => loadHotspot(hotspot.data!)}
-                >
-                  放弃修改
-                </Button>
-              )}
-            </div>
-          </form>
-        </Card>
-      </div>
-
-      <details className="mt-5 rounded-xl border bg-card px-6 py-5 shadow-sm">
-        <summary className="cursor-pointer font-semibold text-destructive">
-          危险操作
-        </summary>
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-t pt-4">
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            关闭客户端与热点。之后只能通过 USB ADB 转发或整机重启恢复网页访问。
+            <SelectTrigger id="network-control">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="native">使用原生网络（推荐）</SelectItem>
+              <SelectItem value="managed">独立管理（高级）</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-sm text-muted-foreground">
+            默认由相机管理无线连接。独立管理模式会在切换网络时接管无线，可能中断
+            DJI Mimo 连接。
           </p>
-          <ConfirmButton
-            title="关闭无线网络？"
-            description="将断开 WiFi 和热点。之后需要 USB ADB 转发或整机重启才能恢复访问。"
-            disabled={!canChange || busy || operating}
-            variant="destructive"
-            onConfirm={() => queue("wifi_off")}
-          >
-            <WifiOff /> 关闭无线网络
-          </ConfirmButton>
+          {managed && (
+            <p className="text-sm text-muted-foreground">
+              返回原生模式前，请先到{" "}
+              <a className="underline underline-offset-4" href="#/system">
+                系统页
+              </a>{" "}
+              交还原生网络，等待操作完成。
+            </p>
+          )}
         </div>
       </details>
-      <Modal
-        open={confirmHotspot}
-        onOpenChange={(value) => {
-          if (!busy) setConfirmHotspot(value);
-        }}
-        title={mode === "hotspot" ? "保存并重启热点？" : "保存并开启热点？"}
-        description={`将切换到热点「${apSSID}」。当前页面可能断线；失败时设备会尝试恢复先前连接与设置。`}
-      >
-        <div className="flex justify-end gap-2">
-          <Button
-            variant="outline"
-            disabled={busy}
-            onClick={() => setConfirmHotspot(false)}
-          >
-            取消
-          </Button>
-          <Button
-            disabled={!canChange || busy || operating}
-            onClick={async () => {
-              await applyHotspot();
-              setConfirmHotspot(false);
-            }}
-          >
-            {busy ? "正在提交…" : "确认切换"}
-          </Button>
-        </div>
-      </Modal>
 
-      <Modal
-        open={connect}
-        onOpenChange={(value) => {
-          if (!busy) {
-            setConnect(value);
-            if (!value) setPassword("");
-          }
-        }}
-        title={ssid ? `连接到「${ssid}」` : "连接其他网络"}
-        description="确认后将切换到客户端模式，当前浏览器可能断线；连接失败时会尝试恢复先前网络。"
-      >
-        <form
-          className="space-y-4"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            setConnectError("");
-            try {
-              const body: Record<string, unknown> = { ssid, bssid };
-              if (!reuse) body.password = open ? "" : password;
-              await queue("wifi_connect", body);
-              setConnect(false);
-              setPassword("");
-            } catch (cause) {
-              setConnectError(
-                `${errorText(cause)}。若连接中断，请等待状态刷新，不要立即重复提交。`,
-              );
-            }
-          }}
-        >
-          {reuse ? (
-            <Notice>
-              将使用已保存的凭据连接。切换网络可能使当前页面断线。
-            </Notice>
-          ) : (
-            <>
-              <div>
-                <Label htmlFor="wifi-ssid">网络名称</Label>
-                <Input
-                  id="wifi-ssid"
-                  autoFocus
-                  value={ssid}
-                  onChange={(event) => setSSID(event.target.value)}
-                  required
-                />
+      {managed && (
+        <>
+          <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
+            <Card
+              title="连接 WiFi"
+              description="选择已保存网络，或扫描附近网络。切换网络可能使当前页面断线。"
+            >
+              <div className="mb-4 flex flex-wrap gap-2">
+                <Button
+                  disabled={!canChange || scan.isFetching || busy || operating}
+                  onClick={() => void scan.refetch()}
+                >
+                  <RefreshCw />
+                  {scan.isFetching ? "扫描中…" : "扫描附近网络"}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={!canChange || busy || operating}
+                  onClick={() => showConnect()}
+                >
+                  连接其他网络
+                </Button>
               </div>
-              {!open && (
-                <div>
-                  <Label htmlFor="wifi-password">密码</Label>
-                  <Input
-                    id="wifi-password"
-                    type="password"
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    required
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    8–63 字节或 64 位十六进制 PSK。
-                  </p>
+              {scan.error && (
+                <Notice tone="error">扫描失败：{scan.error.message}</Notice>
+              )}
+              {known.isPending ? (
+                <Spinner />
+              ) : known.error ? (
+                <Notice tone="error">{known.error.message}</Notice>
+              ) : !networks.length ? (
+                <EmptyState
+                  title="尚无已保存网络"
+                  description="扫描附近网络，或手动输入网络名称。"
+                />
+              ) : (
+                <div className="divide-y">
+                  {networks.map((network) => (
+                    <div
+                      key={network.ssid || network.bssid}
+                      className="flex items-center justify-between gap-3 py-4"
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        <Signal className="size-5 shrink-0 text-primary" />
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="break-all text-sm font-medium">
+                              {network.ssid || "隐藏网络"}
+                            </p>
+                            {network.connected && <Badge>当前连接</Badge>}
+                            {network.saved && (
+                              <Badge variant="secondary">已保存</Badge>
+                            )}
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {network.signal == null
+                              ? "信号未知"
+                              : `${network.signal} dBm`}{" "}
+                            · {network.encrypted ? "需要密码" : "开放网络"}
+                          </p>
+                          {(network.bssid || network.band) && (
+                            <details className="mt-2 text-xs text-muted-foreground">
+                              <summary className="cursor-pointer">
+                                网络详情
+                              </summary>
+                              <p className="mt-1 font-mono">
+                                {network.bssid || "BSSID 未知"}
+                                {network.band ? ` · ${network.band}` : ""}
+                              </p>
+                            </details>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {!network.connected && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!canChange || busy || operating}
+                            onClick={() => showConnect(network)}
+                          >
+                            连接
+                          </Button>
+                        )}
+                        {network.saved && (
+                          <details className="relative">
+                            <summary className="cursor-pointer list-none rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-accent">
+                              更多
+                            </summary>
+                            <div className="absolute right-0 z-10 mt-1 rounded-md border bg-popover p-1 shadow-md">
+                              <ConfirmButton
+                                title="忘记此网络？"
+                                description={`将删除「${network.ssid}」的保存凭据，不会主动断开当前连接。`}
+                                disabled={!canChange || busy || operating}
+                                onConfirm={async () => {
+                                  await post("known_forget", {
+                                    ssid: network.ssid,
+                                    confirm: true,
+                                  });
+                                  await refresh();
+                                }}
+                              >
+                                <Trash2 /> 忘记
+                              </ConfirmButton>
+                            </div>
+                          </details>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
-            </>
-          )}
-          <details className="border-t pt-4">
-            <summary className="cursor-pointer text-sm font-medium">
-              高级设置
-            </summary>
-            <div className="mt-4 space-y-4">
-              <div>
-                <Label htmlFor="wifi-bssid">指定 BSSID（可选）</Label>
-                <Input
-                  id="wifi-bssid"
-                  className="font-mono"
-                  placeholder="aa:bb:cc:dd:ee:ff"
-                  value={bssid}
-                  onChange={(event) => setBSSID(event.target.value)}
-                />
-              </div>
-              {!reuse && (
-                <label className="flex items-center gap-3 text-sm">
+              <details className="mt-5 border-t pt-4">
+                <summary className="cursor-pointer text-sm font-medium">
+                  高级设置
+                </summary>
+                <label className="mt-4 flex items-start gap-3 text-sm">
                   <Checkbox
-                    checked={open}
-                    onCheckedChange={(checked) => setOpen(checked === true)}
+                    className="mt-1"
+                    checked={config.data?.auto_connect ?? false}
+                    disabled={!canChange || busy || operating}
+                    onCheckedChange={async (checked) => {
+                      setBusy(true);
+                      setError("");
+                      try {
+                        await post("auto_connect", {
+                          enabled: checked === true,
+                        });
+                        await refresh();
+                        setMessage("自动连接设置已保存，下次整机启动时生效。");
+                      } catch (cause) {
+                        setError(errorText(cause));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
                   />
-                  开放网络（不使用密码）
+                  <span>
+                    启动时扫描并连接最近使用的已保存网络
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      开启后在下次整机启动时接管无线并尝试连接。
+                    </span>
+                  </span>
                 </label>
+                {config.error && (
+                  <div className="mt-3">
+                    <Notice tone="error">{config.error.message}</Notice>
+                  </div>
+                )}
+              </details>
+            </Card>
+
+            <Card
+              title="相机热点"
+              description="配置并开启供手机或电脑连接的相机热点，不提供互联网转发。"
+            >
+              {hotspot.error && (
+                <Notice tone="error">
+                  无法读取热点配置：{hotspot.error.message}
+                </Notice>
               )}
+              <form
+                className="space-y-4"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  setConfirmHotspot(true);
+                }}
+              >
+                <div>
+                  <Label htmlFor="hotspot-ssid">热点名称</Label>
+                  <Input
+                    id="hotspot-ssid"
+                    value={apSSID}
+                    required
+                    onChange={(event) => setAPSSID(event.target.value)}
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    1–32 个 UTF-8 字节。
+                  </p>
+                </div>
+                {!apOpen && (
+                  <div>
+                    <Label htmlFor="hotspot-password">新密码</Label>
+                    <Input
+                      id="hotspot-password"
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder={
+                        hotspot.data?.has_password
+                          ? "留空则保留当前密码"
+                          : "请输入热点密码"
+                      }
+                      value={apPassword}
+                      required={!hotspot.data?.has_password}
+                      onChange={(event) => setAPPassword(event.target.value)}
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      8–63 字节或 64 位十六进制 PSK。
+                    </p>
+                  </div>
+                )}
+                <details className="border-t pt-4">
+                  <summary className="cursor-pointer text-sm font-medium">
+                    高级设置
+                  </summary>
+                  <div className="mt-4 space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label htmlFor="hotspot-band">频段</Label>
+                        <Select
+                          value={band}
+                          onValueChange={(value) => {
+                            setBand(value);
+                            setChannel(value === "5G" ? "149" : "6");
+                          }}
+                        >
+                          <SelectTrigger id="hotspot-band" className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="2.4G">2.4 GHz</SelectItem>
+                            <SelectItem value="5G">5 GHz</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label htmlFor="hotspot-channel">信道</Label>
+                        <Select value={channel} onValueChange={setChannel}>
+                          <SelectTrigger
+                            id="hotspot-channel"
+                            className="w-full"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(band === "5G"
+                              ? [
+                                  36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108,
+                                  112, 116, 120, 124, 128, 132, 136, 140, 144,
+                                  149, 153, 157, 161, 165,
+                                ]
+                              : Array.from(
+                                  { length: 14 },
+                                  (_, index) => index + 1,
+                                )
+                            ).map((value) => (
+                              <SelectItem key={value} value={String(value)}>
+                                {value}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      实际可用信道受固件、区域和无线环境约束。
+                    </p>
+                    <label className="flex items-center gap-3 text-sm">
+                      <Checkbox
+                        checked={apOpen}
+                        onCheckedChange={(checked) => {
+                          setAPOpen(checked === true);
+                          setAPPassword("");
+                        }}
+                      />
+                      开放热点（不设密码）
+                    </label>
+                    {apOpen && (
+                      <Notice tone="warning">
+                        开放热点没有 WiFi 加密，只应在可信环境使用。
+                      </Notice>
+                    )}
+                  </div>
+                </details>
+                <div className="flex flex-wrap items-center gap-2">
+                  {(mode !== "hotspot" || apDirty) && (
+                    <Button
+                      type="submit"
+                      disabled={
+                        !canChange || busy || operating || !hotspot.data
+                      }
+                    >
+                      {mode === "hotspot" ? <Save /> : <Radio />}
+                      {mode === "hotspot" ? "保存并重启热点" : "保存并开启热点"}
+                    </Button>
+                  )}
+                  {mode === "hotspot" && !apDirty && (
+                    <Badge>热点正在运行</Badge>
+                  )}
+                  {apDirty && hotspot.data && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => loadHotspot(hotspot.data!)}
+                    >
+                      放弃修改
+                    </Button>
+                  )}
+                </div>
+              </form>
+            </Card>
+          </div>
+
+          <details className="mt-5 rounded-xl border bg-card px-6 py-5 shadow-sm">
+            <summary className="cursor-pointer font-semibold text-destructive">
+              危险操作
+            </summary>
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-t pt-4">
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                关闭客户端与热点。之后只能通过 USB ADB
+                转发或整机重启恢复网页访问。
+              </p>
+              <ConfirmButton
+                title="关闭无线网络？"
+                description="将断开 WiFi 和热点。之后需要 USB ADB 转发或整机重启才能恢复访问。"
+                disabled={!canChange || busy || operating}
+                variant="destructive"
+                onConfirm={() => queue("wifi_off")}
+              >
+                <WifiOff /> 关闭无线网络
+              </ConfirmButton>
             </div>
           </details>
-          {connectError && (
-            <Notice tone="error">
-              {connectError}
+          <Modal
+            open={confirmHotspot}
+            onOpenChange={(value) => {
+              if (!busy) setConfirmHotspot(value);
+            }}
+            title={mode === "hotspot" ? "保存并重启热点？" : "保存并开启热点？"}
+            description={`将切换到热点「${apSSID}」。当前页面可能断线；失败时设备会尝试恢复先前连接与设置。`}
+          >
+            <div className="flex justify-end gap-2">
               <Button
-                type="button"
                 variant="outline"
-                className="mt-2"
-                onClick={() => setConnect(false)}
+                disabled={busy}
+                onClick={() => setConfirmHotspot(false)}
               >
-                查看恢复方式
+                取消
               </Button>
-            </Notice>
-          )}
-          <div className="flex justify-end">
-            <Button type="submit" disabled={!canChange || busy || operating}>
-              <KeyRound /> {busy ? "正在提交…" : "确认连接"}
-            </Button>
-          </div>
-        </form>
-      </Modal>
+              <Button
+                disabled={!canChange || busy || operating}
+                onClick={async () => {
+                  await applyHotspot();
+                  setConfirmHotspot(false);
+                }}
+              >
+                {busy ? "正在提交…" : "确认切换"}
+              </Button>
+            </div>
+          </Modal>
+
+          <Modal
+            open={connect}
+            onOpenChange={(value) => {
+              if (!busy) {
+                setConnect(value);
+                if (!value) setPassword("");
+              }
+            }}
+            title={ssid ? `连接到「${ssid}」` : "连接其他网络"}
+            description="确认后将切换到客户端模式，当前浏览器可能断线；连接失败时会尝试恢复先前网络。"
+          >
+            <form
+              className="space-y-4"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                setConnectError("");
+                try {
+                  const body: Record<string, unknown> = { ssid, bssid };
+                  if (!reuse) body.password = open ? "" : password;
+                  await queue("wifi_connect", body);
+                  setConnect(false);
+                  setPassword("");
+                } catch (cause) {
+                  setConnectError(
+                    `${errorText(cause)}。若连接中断，请等待状态刷新，不要立即重复提交。`,
+                  );
+                }
+              }}
+            >
+              {reuse ? (
+                <Notice>
+                  将使用已保存的凭据连接。切换网络可能使当前页面断线。
+                </Notice>
+              ) : (
+                <>
+                  <div>
+                    <Label htmlFor="wifi-ssid">网络名称</Label>
+                    <Input
+                      id="wifi-ssid"
+                      autoFocus
+                      value={ssid}
+                      onChange={(event) => setSSID(event.target.value)}
+                      required
+                    />
+                  </div>
+                  {!open && (
+                    <div>
+                      <Label htmlFor="wifi-password">密码</Label>
+                      <Input
+                        id="wifi-password"
+                        type="password"
+                        autoComplete="current-password"
+                        value={password}
+                        onChange={(event) => setPassword(event.target.value)}
+                        required
+                      />
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        8–63 字节或 64 位十六进制 PSK。
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
+              <details className="border-t pt-4">
+                <summary className="cursor-pointer text-sm font-medium">
+                  高级设置
+                </summary>
+                <div className="mt-4 space-y-4">
+                  <div>
+                    <Label htmlFor="wifi-bssid">指定 BSSID（可选）</Label>
+                    <Input
+                      id="wifi-bssid"
+                      className="font-mono"
+                      placeholder="aa:bb:cc:dd:ee:ff"
+                      value={bssid}
+                      onChange={(event) => setBSSID(event.target.value)}
+                    />
+                  </div>
+                  {!reuse && (
+                    <label className="flex items-center gap-3 text-sm">
+                      <Checkbox
+                        checked={open}
+                        onCheckedChange={(checked) => setOpen(checked === true)}
+                      />
+                      开放网络（不使用密码）
+                    </label>
+                  )}
+                </div>
+              </details>
+              {connectError && (
+                <Notice tone="error">
+                  {connectError}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mt-2"
+                    onClick={() => setConnect(false)}
+                  >
+                    查看恢复方式
+                  </Button>
+                </Notice>
+              )}
+              <div className="flex justify-end">
+                <Button
+                  type="submit"
+                  disabled={!canChange || busy || operating}
+                >
+                  <KeyRound /> {busy ? "正在提交…" : "确认连接"}
+                </Button>
+              </div>
+            </form>
+          </Modal>
+        </>
+      )}
     </>
   );
 }

@@ -13,6 +13,7 @@ import (
 type Config struct {
 	Schema          int     `json:"schema"`
 	ThemeMode       string  `json:"theme_mode"`
+	NetworkControl  string  `json:"network_control"`
 	AutoConnect     bool    `json:"auto_connect"`
 	ThumbConcurrent int     `json:"thumb_concurrent"`
 	CamW            int     `json:"cam_w"`
@@ -29,7 +30,7 @@ type ConfigStore struct {
 }
 
 func defaultConfig() Config {
-	return Config{Schema: 1, ThemeMode: "auto", ThumbConcurrent: 3, CamW: 1280, CamH: 720, CamFPS: 30, CamExtPort: 8554, CamQuality: 1, CamBitrate: 4.4}
+	return Config{Schema: 1, ThemeMode: "auto", NetworkControl: networkControlNative, ThumbConcurrent: 3, CamW: 1280, CamH: 720, CamFPS: 30, CamExtPort: 8554, CamQuality: 1, CamBitrate: 4.4}
 }
 
 func validateConfig(c Config) error {
@@ -38,6 +39,12 @@ func validateConfig(c Config) error {
 	}
 	if c.ThemeMode != "auto" && c.ThemeMode != "light" && c.ThemeMode != "dark" {
 		return errors.New("invalid theme")
+	}
+	if c.NetworkControl != networkControlNative && c.NetworkControl != networkControlManaged {
+		return errors.New("network_control must be native or managed")
+	}
+	if c.NetworkControl == networkControlNative && c.AutoConnect {
+		return errNativeNetworkControl
 	}
 	if c.ThumbConcurrent < 1 || c.ThumbConcurrent > 8 {
 		return errors.New("thumbnail concurrency must be 1–8")
@@ -62,13 +69,27 @@ func loadConfig(name string) (*ConfigStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = json.Unmarshal(b, &s.value); err != nil {
-		return nil, fmt.Errorf("configuration: %w", err)
-	}
-	if err = validateConfig(s.value); err != nil {
+	if s.value, err = decodeConfig(b); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// Older releases had no network policy. Reuse the native connection unless
+// managed control was explicitly selected; do not rewrite user settings on read.
+func decodeConfig(data []byte) (Config, error) {
+	c := defaultConfig()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return c, fmt.Errorf("configuration: %w", err)
+	}
+	if err := json.Unmarshal(data, &c); err != nil {
+		return c, fmt.Errorf("configuration: %w", err)
+	}
+	if _, exists := fields["network_control"]; !exists {
+		c.AutoConnect = false
+	}
+	return c, validateConfig(c)
 }
 func (s *ConfigStore) Read() Config {
 	s.mu.RLock()
@@ -98,6 +119,7 @@ func (s *ConfigStore) Update(change func(*Config) error) error {
 
 type configPatch struct {
 	ThemeMode       *string  `json:"theme_mode"`
+	NetworkControl  *string  `json:"network_control"`
 	AutoConnect     *bool    `json:"auto_connect"`
 	ThumbConcurrent *int     `json:"thumb_concurrent"`
 	CamW            *int     `json:"cam_w"`
@@ -111,6 +133,12 @@ type configPatch struct {
 func (p configPatch) apply(c *Config) error {
 	if p.ThemeMode != nil {
 		c.ThemeMode = *p.ThemeMode
+	}
+	if p.NetworkControl != nil {
+		c.NetworkControl = *p.NetworkControl
+		if c.NetworkControl == networkControlNative {
+			c.AutoConnect = false
+		}
 	}
 	if p.AutoConnect != nil {
 		c.AutoConnect = *p.AutoConnect
@@ -150,8 +178,8 @@ func registerConfig(mux *http.ServeMux, a *App) {
 		if !readJSON(w, r, &p) {
 			return
 		}
-		if err := a.Config.Update(p.apply); err != nil {
-			jsonError(w, 400, "config_update", err)
+		if err := updateUserConfig(a, p.apply, p.NetworkControl != nil || p.AutoConnect != nil); err != nil {
+			networkJSONError(w, 400, "config_update", err)
 			return
 		}
 		jsonResponse(w, 200, a.Config.Read())
@@ -170,8 +198,8 @@ func registerConfig(mux *http.ServeMux, a *App) {
 			jsonError(w, 400, "invalid_config", errors.New("enabled is required"))
 			return
 		}
-		if err := a.Config.Update(func(c *Config) error { c.AutoConnect = *p.Enabled; return nil }); err != nil {
-			jsonError(w, 500, "config_write", err)
+		if err := updateUserConfig(a, func(c *Config) error { c.AutoConnect = *p.Enabled; return nil }, true); err != nil {
+			networkJSONError(w, 400, "config_write", err)
 			return
 		}
 		jsonResponse(w, 200, map[string]bool{"enabled": *p.Enabled})

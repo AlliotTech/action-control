@@ -176,7 +176,8 @@ func checkDeviceDependencies(a *App) error {
 	if runtime.GOARCH != "arm64" {
 		return errors.New("ARM64 camera required")
 	}
-	for _, name := range []string{"systemctl", "gst-launch-1.0", "gst-inspect-1.0", "qmmf-server", "weston-terminal", "ip", "iw", "wpa_supplicant", "hostapd", "dnsmasq", "udhcpc", "reboot", "sqlite3"} {
+	// Standalone Wi-Fi tools are checked by the managed-mode worker only.
+	for _, name := range []string{"systemctl", "gst-launch-1.0", "gst-inspect-1.0", "qmmf-server", "weston-terminal", "iw", "reboot", "sqlite3"} {
 		if _, err := a.Tool(name); err != nil {
 			return err
 		}

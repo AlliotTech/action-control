@@ -25,7 +25,7 @@ const (
 	NetworkServiceName = "action-control-network.service"
 )
 
-var Version = "0.1.6"
+var Version = "0.1.7"
 
 type App struct {
 	Root    string

@@ -126,6 +126,7 @@ export function SystemPage() {
     [result, setResult] = useState<CommandResult | null>(null);
   const [concurrency, setConcurrency] = useState<number | null>(null);
   const hardware = health.data?.device === true && !health.isError;
+  const managedNetwork = config.data?.network_control === "managed";
   const networkBusy =
     network.data?.operation?.status === "queued" ||
     network.data?.operation?.status === "running";
@@ -219,7 +220,11 @@ export function SystemPage() {
         </Card>
         <Card
           title="原生服务"
-          description="网络操作独立于面板进程。切换可能断开浏览器，提交后不要自动重复。"
+          description={
+            managedNetwork
+              ? "独立管理模式可在这里交还原生网络。"
+              : "无线连接由相机本身管理。"
+          }
         >
           <div className="flex flex-wrap items-center gap-3">
             <Badge>DJI 网络：{native.data?.status ?? "未知"}</Badge>
@@ -242,36 +247,40 @@ export function SystemPage() {
             </div>
           )}
           <div className="mt-4 flex flex-wrap gap-2">
-            <ConfirmButton
-              title="交还原生网络？"
-              description="停止本应用拥有的无线进程并启动 DJI 原生网络服务。当前 WiFi 连接可能断开；返回排队成功不代表切换已经完成。"
-              disabled={!hardware || busy || networkBusy}
-              onConfirm={() =>
-                perform(
-                  "dji_network",
-                  { action: "start", confirm: true },
-                  "已提交原生网络启动请求，请观察网络状态。",
-                )
-              }
-            >
-              <Play />
-              启动原生网络
-            </ConfirmButton>
-            <ConfirmButton
-              title="停止原生网络？"
-              description="将通过独立网络单元停止 DJI 网络服务，可能断开当前连接。请确保 ADB 可用于恢复。"
-              disabled={!hardware || busy || networkBusy}
-              onConfirm={() =>
-                perform(
-                  "dji_network",
-                  { action: "stop", confirm: true },
-                  "已提交原生网络停止请求。",
-                )
-              }
-            >
-              <Square />
-              停止原生网络
-            </ConfirmButton>
+            {managedNetwork && (
+              <>
+                <ConfirmButton
+                  title="交还原生网络？"
+                  description="停止本应用拥有的无线进程并启动 DJI 原生网络服务。当前 WiFi 连接可能断开；返回排队成功不代表切换已经完成。"
+                  disabled={!hardware || busy || networkBusy}
+                  onConfirm={() =>
+                    perform(
+                      "dji_network",
+                      { action: "start", confirm: true },
+                      "已提交原生网络启动请求，请观察网络状态。",
+                    )
+                  }
+                >
+                  <Play />
+                  启动原生网络
+                </ConfirmButton>
+                <ConfirmButton
+                  title="停止原生网络？"
+                  description="将通过独立网络单元停止 DJI 网络服务，可能断开当前连接。请确保 ADB 可用于恢复。"
+                  disabled={!hardware || busy || networkBusy}
+                  onConfirm={() =>
+                    perform(
+                      "dji_network",
+                      { action: "stop", confirm: true },
+                      "已提交原生网络停止请求。",
+                    )
+                  }
+                >
+                  <Square />
+                  停止原生网络
+                </ConfirmButton>
+              </>
+            )}
             <ConfirmButton
               title="停止原生相机服务？"
               description="停止冲突的 DJI 原生服务并显示双屏保护提示。原生网络单独管理。此操作不会自动开始采集，需整机重启恢复相机原生功能。"

@@ -20,6 +20,9 @@ func belongsToUnit(a *App, pid int, unit string) bool {
 	if err != nil {
 		return false
 	}
+	return cgroupHasUnit(b, unit)
+}
+func cgroupHasUnit(b []byte, unit string) bool {
 	for _, line := range strings.Split(string(b), "\n") {
 		fields := strings.SplitN(line, ":", 3)
 		if len(fields) == 3 {
@@ -67,6 +70,9 @@ func writeNetworkOperation(a *App, op networkOperation) error {
 	return atomicWrite(filepath.Join(a.RunDir, "network-operation.json"), b, 0600)
 }
 func queueNetwork(a *App, p networkRequest) error {
+	if err := requireManagedNetwork(a); err != nil {
+		return err
+	}
 	if err := a.RequireManaged(); err != nil {
 		return err
 	}
@@ -75,6 +81,9 @@ func queueNetwork(a *App, p networkRequest) error {
 		return err
 	}
 	defer lock.Close()
+	if err = requireManagedNetwork(a); err != nil {
+		return err
+	}
 	if err = pendingNetwork(a); err != nil {
 		return err
 	}
@@ -168,7 +177,12 @@ func queueNetwork(a *App, p networkRequest) error {
 	return nil
 }
 func getWiFiStatus(a *App, ctx context.Context) (wifiStatus, error) {
-	st := wifiStatus{Mode: "unknown", State: "unknown"}
+	st := wifiStatus{Mode: "unknown", Role: "unknown", Owner: "unknown", State: "unknown"}
+	cfg, err := readNetworkConfig(a)
+	if err != nil {
+		return st, err
+	}
+	st.Control = cfg.NetworkControl
 	if err := a.RequireDevice(); err != nil {
 		return st, err
 	}
@@ -234,9 +248,17 @@ func getWiFiStatus(a *App, ctx context.Context) (wifiStatus, error) {
 			}
 		}
 	}
+	st.Role = st.Mode
 	native, e := a.Run(ctx, 5*time.Second, "systemctl", "is-active", "dji_network.service")
 	if e == nil && strings.TrimSpace(string(native)) == "active" {
+		st.Owner = "native"
+		// Retain the legacy mode field for existing clients. Role describes the
+		// actual interface even when the native service is running with Wi-Fi off.
 		st.Mode = "native"
+	} else if pids, e := managedNetworkPIDs(a); e == nil && len(pids) > 0 {
+		st.Owner = "action-control"
+	} else if e == nil && st.Role == "closed" {
+		st.Owner = "none"
 	}
 	if b, e := os.ReadFile(filepath.Join(a.RunDir, "network-operation.json")); e == nil {
 		var op networkOperation

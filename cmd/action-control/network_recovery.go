@@ -98,6 +98,9 @@ func captureNetworkRecovery(a *App, change *hotspotChange) (*networkRecoveryPlan
 }
 
 func restoreNetwork(a *App, plan *networkRecoveryPlan) error {
+	if err := requireManagedNetwork(a); err != nil {
+		return err
+	}
 	if len(plan.HotspotData) > 0 {
 		if err := writeManagedShared(a, hotspotPath, plan.HotspotData, 0600); err != nil {
 			return err

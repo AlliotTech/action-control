@@ -379,12 +379,8 @@ func importConfig(a *App, file, known string) error {
 		if e != nil {
 			return e
 		}
-		c := defaultConfig()
-		if e = json.Unmarshal(data, &c); e != nil {
-			return e
-		}
-		c.Schema = 1
-		if e = validateConfig(c); e != nil {
+		c, e := decodeConfig(data)
+		if e != nil {
 			return e
 		}
 		config = &c
@@ -416,6 +412,20 @@ func importConfig(a *App, file, known string) error {
 	defer lock.Close()
 	if err = pendingNetwork(a); err != nil {
 		return err
+	}
+	previous, err := readNetworkConfig(a)
+	if err != nil {
+		return err
+	}
+	next := previous
+	if config != nil {
+		next = *config
+	}
+	if err = checkNetworkControlChange(a, previous, next); err != nil {
+		return err
+	}
+	if known != "" && next.NetworkControl != networkControlManaged {
+		return errNativeNetworkControl
 	}
 	if err = stopUnits(a, ServiceName); err != nil {
 		return err

@@ -2,6 +2,7 @@ export interface Config {
   schema: number;
   version: string;
   theme_mode: "auto" | "light" | "dark";
+  network_control: "native" | "managed";
   auto_connect: boolean;
   thumb_concurrent: number;
   cam_w: number;
@@ -111,6 +112,9 @@ export interface DiskUsage {
 }
 export interface WiFiStatus {
   mode: "client" | "hotspot" | "closed" | "native" | "unknown";
+  role: "client" | "hotspot" | "closed" | "unknown";
+  owner: "native" | "action-control" | "none" | "unknown";
+  control: "native" | "managed";
   state: string;
   ssid: string;
   ip: string;

@@ -80,6 +80,9 @@ func validateHotspot(h hotspotSettings) error {
 	return nil
 }
 func setHotspot(a *App, h hotspotSettings, data []byte) error {
+	if err := requireManagedNetwork(a); err != nil {
+		return err
+	}
 	if err := validateHotspot(h); err != nil {
 		return err
 	}
@@ -174,6 +177,9 @@ func stopOwnedNetwork(a *App) error {
 	return nil
 }
 func prepareWireless(a *App) error {
+	if err := requireManagedNetwork(a); err != nil {
+		return err
+	}
 	if err := a.MarkRebootRequired("无线运行态已更改", false); err != nil {
 		return err
 	}
@@ -218,6 +224,9 @@ func wirelessStatus(a *App, directory string) (map[string]string, error) {
 	return configValues(buffer[:n]), nil
 }
 func connectWireless(a *App, n knownNetwork) error {
+	if err := requireManagedNetwork(a); err != nil {
+		return err
+	}
 	data, err := wpaConfig(a, n)
 	if err != nil {
 		return err
@@ -300,6 +309,9 @@ func connectWireless(a *App, n knownNetwork) error {
 	return saveKnown(a, known)
 }
 func startHotspot(a *App) error {
+	if err := requireManagedNetwork(a); err != nil {
+		return err
+	}
 	h, _, err := readHotspot(a)
 	if err != nil {
 		return err
@@ -349,6 +361,13 @@ func startHotspot(a *App) error {
 	return errors.New("hotspot did not reach ENABLED state")
 }
 func RunNetwork(a *App) (err error) {
+	cfg, err := readNetworkConfig(a)
+	if err != nil {
+		return err
+	}
+	if cfg.NetworkControl == networkControlNative {
+		return discardNativeNetworkRequest(a)
+	}
 	if err = a.RequireManaged(); err != nil {
 		return err
 	}
@@ -360,12 +379,19 @@ func RunNetwork(a *App) (err error) {
 		return err
 	}
 	defer lock.Close()
+	cfg, err = readNetworkConfig(a)
+	if err != nil {
+		return err
+	}
+	if cfg.NetworkControl == networkControlNative {
+		return discardNativeNetworkRequestLocked(a)
+	}
 	name := filepath.Join(a.RunDir, "network-request.json")
 	data, err := os.ReadFile(name)
 	automatic := errors.Is(err, os.ErrNotExist)
 	var request networkRequest
 	if automatic {
-		if !a.Config.Read().AutoConnect {
+		if !cfg.AutoConnect {
 			return nil
 		}
 		request = networkRequest{ID: rand.Text(), Action: "client"}
@@ -477,6 +503,9 @@ func RunNetwork(a *App) (err error) {
 
 // udhcpc invokes this through the installed hook, inside the independent network cgroup.
 func RunDHCP(a *App, args []string) error {
+	if err := requireManagedNetwork(a); err != nil {
+		return err
+	}
 	if err := a.RequireManaged(); err != nil {
 		return err
 	}
@@ -556,13 +585,27 @@ func RegisterNetwork(mux *http.ServeMux, a *App) (func() error, error) {
 		jsonResponse(w, 200, st)
 	})
 	mux.HandleFunc("GET /api/wifi_scan", func(w http.ResponseWriter, r *http.Request) {
+		if err := requireManagedNetwork(a); err != nil {
+			networkJSONError(w, 409, "network_control", err)
+			return
+		}
 		if err := a.RequireDevice(); err != nil {
 			jsonError(w, 503, "device_unavailable", err)
 			return
 		}
+		lock, err := networkLock(a, false)
+		if err != nil {
+			jsonError(w, 409, "network_busy", err)
+			return
+		}
+		defer lock.Close()
+		if err = pendingNetwork(a); err != nil {
+			jsonError(w, 409, "network_busy", err)
+			return
+		}
 		networks, err := scanWiFi(a, r.Context())
 		if err != nil {
-			jsonError(w, 502, "wifi_scan", err)
+			networkJSONError(w, 502, "wifi_scan", err)
 			return
 		}
 		jsonResponse(w, 200, map[string]any{"networks": networks})
@@ -583,7 +626,7 @@ func RegisterNetwork(mux *http.ServeMux, a *App) (func() error, error) {
 				return
 			}
 			if err := queueNetwork(a, networkRequest{Action: action, SSID: input.SSID, Password: input.Password, BSSID: input.BSSID}); err != nil {
-				jsonError(w, 409, "network_operation", err)
+				networkJSONError(w, 409, "network_operation", err)
 				return
 			}
 			jsonResponse(w, 202, map[string]any{"ok": true, "status": "queued"})
@@ -602,7 +645,7 @@ func RegisterNetwork(mux *http.ServeMux, a *App) (func() error, error) {
 			return
 		}
 		if err := queueNetwork(a, networkRequest{Action: "hotspot", Hotspot: &input.hotspotChange}); err != nil {
-			jsonError(w, 409, "network_operation", err)
+			networkJSONError(w, 409, "network_operation", err)
 			return
 		}
 		jsonResponse(w, 202, map[string]any{"ok": true, "status": "queued"})
@@ -620,6 +663,10 @@ func RegisterNetwork(mux *http.ServeMux, a *App) (func() error, error) {
 		jsonResponse(w, 200, map[string]any{"networks": result})
 	})
 	mux.HandleFunc("POST /api/known_forget", func(w http.ResponseWriter, r *http.Request) {
+		if err := requireManagedNetwork(a); err != nil {
+			networkJSONError(w, 409, "network_control", err)
+			return
+		}
 		var p struct {
 			SSID    string `json:"ssid"`
 			Confirm bool   `json:"confirm"`
@@ -657,7 +704,7 @@ func RegisterNetwork(mux *http.ServeMux, a *App) (func() error, error) {
 			return
 		}
 		if err = saveKnown(a, items); err != nil {
-			jsonError(w, 500, "known_write", err)
+			networkJSONError(w, 500, "known_write", err)
 			return
 		}
 		jsonResponse(w, 200, map[string]bool{"ok": true})
@@ -671,6 +718,10 @@ func RegisterNetwork(mux *http.ServeMux, a *App) (func() error, error) {
 		jsonResponse(w, 200, settings)
 	})
 	mux.HandleFunc("POST /api/hotspot_config", func(w http.ResponseWriter, r *http.Request) {
+		if err := requireManagedNetwork(a); err != nil {
+			networkJSONError(w, 409, "network_control", err)
+			return
+		}
 		var p struct {
 			SSID     string  `json:"ssid"`
 			Password *string `json:"password"`
@@ -704,7 +755,7 @@ func RegisterNetwork(mux *http.ServeMux, a *App) (func() error, error) {
 			h.password = *p.Password
 		}
 		if err = setHotspot(a, h, data); err != nil {
-			jsonError(w, 400, "hotspot_config", err)
+			networkJSONError(w, 400, "hotspot_config", err)
 			return
 		}
 		jsonResponse(w, 200, map[string]any{"ok": true, "restart_required": true})

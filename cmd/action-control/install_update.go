@@ -207,18 +207,29 @@ func updateApp(a *App, source string, reboot bool) error {
 	if err = checkPrivateTree(a, state); err != nil {
 		return err
 	}
-	if err = migrateBootBackup(a, state); err != nil {
-		return err
-	}
-	if err = enablePersistentUnits(a); err != nil {
-		return err
-	}
 	lock, err := networkLock(a, false)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
 	if err = pendingNetwork(a); err != nil {
+		return err
+	}
+	// A legacy DHCP hook will execute the newly installed binary on renewal.
+	// Refuse a policy migration while the old managed connection is still live.
+	cfg, err := readNetworkConfig(a)
+	if err != nil {
+		return err
+	}
+	if cfg.NetworkControl == networkControlNative {
+		if err = checkNativeNetworkIdle(a); err != nil {
+			return err
+		}
+	}
+	if err = migrateBootBackup(a, state); err != nil {
+		return err
+	}
+	if err = enablePersistentUnits(a); err != nil {
 		return err
 	}
 	if exists(filepath.Join(a.Dir, ".update")) {

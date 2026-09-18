@@ -52,6 +52,9 @@ type networkOperation struct {
 }
 type wifiStatus struct {
 	Mode      string            `json:"mode"`
+	Role      string            `json:"role"`
+	Owner     string            `json:"owner"`
+	Control   string            `json:"control"`
 	State     string            `json:"state"`
 	SSID      string            `json:"ssid"`
 	IP        string            `json:"ip"`
@@ -130,6 +133,9 @@ func readKnown(a *App) ([]knownNetwork, error) {
 	return items, nil
 }
 func saveKnown(a *App, items []knownNetwork) error {
+	if err := requireManagedNetwork(a); err != nil {
+		return err
+	}
 	b, err := json.MarshalIndent(items, "", "  ")
 	if err != nil {
 		return err
@@ -217,6 +223,9 @@ func parseScan(output string) []wifiNetwork {
 	return result
 }
 func scanWiFi(a *App, ctx context.Context) ([]wifiNetwork, error) {
+	if err := requireManagedNetwork(a); err != nil {
+		return nil, err
+	}
 	out, err := a.Run(ctx, 15*time.Second, "iw", "dev", "wlan0", "scan")
 	if err != nil {
 		return nil, err
