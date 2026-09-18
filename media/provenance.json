@@ -1,0 +1,62 @@
+{
+  "ffmpeg": "9.0.1",
+  "zlib": "1.3.2",
+  "sqlite": "3.51.1",
+  "zig": "0.16.0",
+  "target": "aarch64-linux-musl",
+  "source": [
+    {
+      "name": "ffmpeg-9.0.1.tar.xz",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz",
+      "sha256": "cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635",
+      "dir": "ffmpeg-9.0.1"
+    },
+    {
+      "name": "zlib-1.3.2.tar.xz",
+      "url": "https://zlib.net/zlib-1.3.2.tar.xz",
+      "sha256": "d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3",
+      "dir": "zlib-1.3.2"
+    },
+    {
+      "name": "sqlite-autoconf-3510100.tar.gz",
+      "url": "https://www.sqlite.org/2025/sqlite-autoconf-3510100.tar.gz",
+      "sha256": "4f2445cd70479724d32ad015ec7fd37fbb6f6130013bd4bfbc80c32beb42b7e0",
+      "dir": "sqlite-autoconf-3510100"
+    },
+    {
+      "name": "zig-aarch64-macos-0.16.0.tar.xz",
+      "sha256": "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489",
+      "url": "https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz",
+      "dir": "zig-0.16.0"
+    }
+  ],
+  "configure": [
+    "--prefix=$PROJECT_ROOT/.build-tools/target",
+    "--arch=aarch64",
+    "--target-os=linux",
+    "--enable-cross-compile",
+    "--cc=$PROJECT_ROOT/.build-tools/cc",
+    "--cxx=$PROJECT_ROOT/.build-tools/cxx",
+    "--ld=$PROJECT_ROOT/.build-tools/cc",
+    "--ar=$PROJECT_ROOT/.build-tools/zig-0.16.0/zig ar",
+    "--ranlib=$PROJECT_ROOT/.build-tools/zig-0.16.0/zig ranlib",
+    "--pkg-config=false",
+    "--disable-autodetect",
+    "--disable-shared",
+    "--enable-static",
+    "--disable-debug",
+    "--disable-doc",
+    "--disable-ffplay",
+    "--disable-avdevice",
+    "--disable-stripping",
+    "--enable-zlib",
+    "--extra-cflags=-I$PROJECT_ROOT/.build-tools/target/include",
+    "--extra-ldflags=-L$PROJECT_ROOT/.build-tools/target/lib -static -s"
+  ],
+  "binaries": {
+    "ffmpeg": "c5573d719bd697fcf8bbadf11128f6e0eee9c380479a40ec6ec7f88577c896cd",
+    "ffprobe": "f01806a4aeb9b8e554b1ef4f7ac7d29e3dcc809cd0810fbd10931df524032149",
+    "sqlite3": "71055f1d4b38f5dcbc15d4bb9d327588dc9483bda7bf4e8713a2ac519c8d195c"
+  },
+  "license": "FFmpeg LGPL-2.1-or-later, zlib Zlib, SQLite public domain; unmodified corresponding sources included. Checksums ensure integrity, not publisher identity."
+}

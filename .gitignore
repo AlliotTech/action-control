@@ -1,0 +1,33 @@
+# Build outputs and caches
+/.build-tools/
+/release/
+/media/bin/
+/media/sources/
+/web/node_modules/
+/web/dist/
+/web/*.tsbuildinfo
+/cmd/action-control/web/dist/
+
+# Local configuration
+/.git.bak/
+/.env
+/.env.*
+!/.env.example
+
+# Test and profiling outputs
+/coverage.out
+/*.prof
+/*.test
+
+# Editor and OS metadata
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Package manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
