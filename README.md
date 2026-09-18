@@ -36,6 +36,8 @@
 
 原生复用的实现范围、API 语义和 pending 项见 [独立说明文档](docs/NATIVE_CAMERA_REUSE.md)。相机上可运行 `action-control native-status` 输出只读诊断 JSON，无需启动网页服务或修改配置。
 
+Mimo 连接期间的共存验证、预览协议、离线重组工具和实测限制见 [Mimo 预览分析](docs/MIMO_PREVIEW_PROTOCOL.md)。本次会话的 H.264 720p 预览已重组并通过解码；网页实时预览仍待接入。
+
 ## 安全说明
 
 Action Control 以 root 权限运行，HTTP 管理接口和视频流**没有登录认证，也没有传输加密**。默认设备服务监听 `:8080`。
