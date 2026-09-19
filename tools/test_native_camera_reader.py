@@ -63,6 +63,32 @@ class FakeLibrary:
         output._obj.value = 5
         return self.call("mode_profile")
 
+    def _write_ints(self, buf, values):
+        import struct as _s
+        packed = _s.pack("<%di" % len(values), *values)
+        for i, b in enumerate(packed):
+            buf[i] = b
+
+    def camera_get_video_format(self, camera, buf):
+        assert camera.value == 202
+        self._write_ints(buf, [0x050A, 6, 2000, 2028])  # 0x050A: flags in high byte, res=0x0A
+        return self.call("video_format")
+
+    def camera_get_video_codec_type(self, camera, buf):
+        assert camera.value == 202
+        self._write_ints(buf, [1])
+        return self.call("video_codec_type")
+
+    def camera_get_video_storage_format(self, camera, buf):
+        assert camera.value == 202
+        self._write_ints(buf, [1])
+        return self.call("video_storage_format")
+
+    def camera_get_eis_status(self, camera, buf):
+        assert camera.value == 202
+        self._write_ints(buf, [1])
+        return self.call("eis_status")
+
     def camera_manager_destroy(self, manager):
         assert manager.value == 101
         return self.call("destroy")
@@ -72,11 +98,13 @@ class ReaderTests(unittest.TestCase):
     def test_opaque_handles_and_null_callbacks(self):
         lib = FakeLibrary()
         self.assertEqual(reader.query(lib), {
-            "camera_id": 0, "camera_amount": 1, "workmode": 3, "mode_profile": 5, "record_state": 3, "capture_state": 0,
+            "camera_id": 0, "camera_amount": 1, "workmode": 3, "mode_profile": 5,
+            "video_settings": {"resolution": 10, "resolution_raw": 0x050A, "fps": 6, "codec": 1, "storage": 1, "eis": 1},
+            "record_state": 3, "capture_state": 0,
         })
         self.assertTrue(lib.assert_null_params)
         self.assertEqual(C.sizeof(reader.CreateParams), 16)
-        self.assertEqual(lib.calls, ["create", "amount", "connect", "workmode", "mode_profile", "record_state", "capture_state", "destroy"])
+        self.assertEqual(lib.calls, ["create", "amount", "connect", "workmode", "mode_profile", "video_format", "video_codec_type", "video_storage_format", "eis_status", "record_state", "capture_state", "destroy"])
 
     def test_failure_never_uses_missing_handles_and_always_releases_manager(self):
         for failure in ("create", "amount", "connect", "record_state", "capture_state", "destroy"):

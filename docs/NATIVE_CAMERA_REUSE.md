@@ -1,4 +1,4 @@
-Action Control 原生相机复用进度，已部署 0.1.15。更新于 2026-09-19。
+Action Control 原生相机复用进度，已部署 0.1.16。更新于 2026-09-19。
 
 2026-09-19 补充：用户重新连接 Mimo 后，已完成本地原生读取、录像启停与该会话共存的服务/传输层验证，并完成 Mimo 预览离线重组和解码，见 [Mimo 预览协议与验收](MIMO_PREVIEW_PROTOCOL.md)。随后已实现 [Mimo 网页预览转发](MIMO_WEB_PREVIEW.md)，复用已有编码视频、处理录像切换时钟并按网页连接数释放观察进程；实机部署验收待完成。[独立预览的生命周期](NATIVE_PREVIEW_LIFECYCLE.md) 仍有未决项。
 
@@ -10,6 +10,7 @@ Action Control 原生相机复用进度，已部署 0.1.15。更新于 2026-09-1
 | 原生录像控制 | `POST /api/native_recording` 只支持明确的开始、停止动作；复用同一客户端的原生入口，沿用当前拍摄设置，由相机处理存储和拍摄限制 |
 | 原生拍照 | `POST /api/native_capture` 只支持明确的 `capture` 动作，复用同一客户端的 `camera_start_capture` 入口；仅在空闲（`record_state=3`、`capture_state=0`）时下发。拍照为一次性动作、无稳定目标状态，故只报 `accepted/blocked/rejected/not_sent/unknown`，不臆造"拍照完成"码；照片是否落盘由相册/文件层确认。与录像共用操作锁，两者不会同时下发。不切换工作模式：相机不在拍照模式时原生返回错误码，如实报 `rejected` |
 | 原生模式档 | `GET /api/native_camera_status` 新增只读 `mode_profile`（`camera_get_mode_profile`）；原始值原样上报，不臆造映射。`POST /api/native_mode` 支持 `mode_photo`/`mode_video`（仅暴露已验证档：拍照=5、视频=1），经 `camera_set_mode_profile(dev,int)`；仅空闲时下发、before/after 读回 profile、原生 rc→outcome、与录像/拍照共用操作锁、可切回。其他档位未映射前不暴露、不发送任意整数 |
+| 原生视频设置（只读） | `GET /api/native_camera_status` 在视频档新增只读 `video_settings`：分辨率/帧率/编码/存储格式/防抖，取自 `camera_get_video_format`（结构体，非 int）及 `camera_get_video_codec_type/_video_storage_format/_eis_status`。**结构体 getter 用 64 字节缓冲**——4 字节 int 缓冲会栈溢出段错误。分辨率取首字 int32 的**低字节**（高字节为标志位），并保留 `resolution_raw` 作证据。标签（`resolution_label`/`fps_label`/`eis_label`）取自 DJI 文档枚举，未知值保留原始整数、不臆造标签。仅视频档可读，其它档 `rc=-1015` 时省略该字段。当前只读，无 setter |
 | 原生服务状态 | 同一接口通过带 3 秒超时的 `systemctl show` 读取相机、媒体、双屏界面和 Mimo 通信服务的生命周期及 PID |
 | 独立诊断命令 | `action-control native-status` 输出同一份 JSON，不创建应用配置或启动网页服务；只读状态不完整时返回非零退出码 |
 | 进程隔离与超时 | 内嵌 Python 适配器通过设备已有 Python 3 / ctypes 执行，原生库不加载到 Go 服务进程；读取 3 秒、录像操作 8 秒超时，仅终止自己的子进程组，不能据此认为原生服务已撤销请求 |
@@ -109,6 +110,8 @@ POST /api/native_recording
 | 客户端 `camera_manager_get_workmode`，`0xb8c80` | 参数为管理器句柄、32 位整数输出指针，返回 0 表示成功；`x0→[+0x10]` 取管理器代理、vtable `+0x60`。只读，原始值不映射为拍照/录像模式 |
 | 客户端 `camera_get_mode_profile`，`0x86bd0` | 相机句柄、32 位整数输出指针，返回 0 表示成功；读当前拍摄模式档。实测拍照档=5、视频档=1 |
 | 客户端 `camera_set_mode_profile`，`0x68090` | 反汇编确认签名为 `(camera_handle, int profile)`：`w1` 存栈后 `x0→[+8]` 取设备代理、以 `&profile` 作参数经 vtable `+0x88` 下发；返回 32 位错误码 |
+| 客户端 `camera_get_video_format`，`0x89d50` | `(camera_handle, void* out)`：写回结构体（实测 ~40 字节），非 4 字节 int。首 int32 低字节=分辨率枚举、偏移 4 的 int32=帧率枚举。用 64 字节缓冲避免栈溢出 |
+| 客户端 `camera_get_video_codec_type`/`_video_storage_format`/`_eis_status`，`0x8aad0`/`0x8af50`/`0x8b850` | 同为结构体 getter，低 int32 为对应值；视频档外返回 `rc=-1015`（不适用）/`-1009` |
 | 服务端录像入口，`0x14bf00` / `0x14d100` | 校验原生相机对象后调用 `cam_event_handler_start_recording` / `cam_event_handler_stop_recording`，将返回码传回客户端 |
 | 原生事件适配，`0x92780` / `0x94490` | 将开始/停止请求送入已有的相机事件处理路径，保留错误返回；内部事件常量不当作 Mimo 线上命令 ID |
 | `libdcam_cs_topmode_common_video.so` 的 `_common_video_idle_start_record`，`0x6e2a0` | 可见原生存储初始化、拍摄许可、温度/CPU 负载限制及异步结果会话处理；这些条件继续交由相机管理 |
@@ -202,3 +205,7 @@ POST /api/native_recording
 0.1.13 原生拍照实机验收（设备 `123456789ABCDEF`，未重启相机）：状态读取新增 `workmode`（原始值 3），`capture_controls.capture` 随空闲态开放。相机处于视频拍摄档时 `POST /api/native_capture` 下发得 `outcome=rejected`、`native_code=-1009`，DCIM 文件数不变、无新文件——如实报告原生拒绝、不切模式、不重试。用户在相机上切到拍照档后重发得 `outcome=accepted`、`native_code=0`、`before/after` 均 `record_state=3/capture_state=0`，DCIM 由 335 增至 336，新增 `DJI_20260919120545_0329_D.JPG`（约 2.46 MB）。两档下 `workmode` 原始值均为 3，故该值不作为拍照/录像档指示，仅原样上报。离线：`go test ./...` 通过（新增 capture decode/controls/endpoint 测试），Python 适配器 24 项通过（新增 6 项 capture）。发布包 `release/action-control-0.1.13-linux-arm64.tar.gz`。
 
 0.1.14/0.1.15 模式档实机验收（设备 `123456789ABCDEF`，未重启相机）：状态读取新增只读 `mode_profile`——拍照档读得 5、视频档读得 1（`workmode` 两档均为 3，故不作档位指示）。`POST /api/native_mode` 双向验证：视频档 `mode_photo` 得 `confirmed`、`native_code=0`、`before.mode_profile=1`/`after.mode_profile=5`；`mode_video` 得 `confirmed`、`5→1`。全软件切换、未动物理拨盘。完整闭环：切拍照（confirmed→5）→ 拍照 `accepted`、DCIM 337→338 新增 `DJI_20260919120933_0330_D.JPG` → 切回视频（confirmed→1），证明网页切档后拍照按钮即可用、不再受物理拨盘限制。离线：`go test ./...` 通过（新增 mode decode/controls/endpoint 测试），Python 适配器 30 项通过（新增 6 项 mode）。发布包 `release/action-control-0.1.15-linux-arm64.tar.gz`。
+
+0.1.16 只读视频设置实机验收（设备 `123456789ABCDEF`）：视频档 `native_camera_status.video_settings` 读得 `resolution_raw=1290 → resolution=10 → "1080P"`、`fps=48`、`codec=1`、`storage=1`、`eis=1 → "RS"`；另一次读得 `resolution_raw=16 → "4K 16:9"`、`fps=60`。切到拍照档该字段各值为 `null`（`rc=-1015`），切回视频恢复。首次实现用 4 字节 int 缓冲读结构体 getter 触发段错误（exit 139），改 64 字节缓冲修复。离线 `go test ./...` 通过（新增 `TestNativeVideoSettingsLabeledFromEnums`），Python 适配器 30 项通过。发布包 `release/action-control-0.1.16-linux-arm64.tar.gz`。
+
+枚举来源与许可：`resolution`/`fps_idx`/`eis_mode` 的值→名映射移植自 DJI 官方 [Osmo GPS Controller Demo](https://github.com/dji-sdk)（MIT，Copyright DJI），仅复用文档化的枚举值、不含代码。已本机交叉验证：`camera_mode↔mode_profile`、`video_format` 分辨率字段↔`video_resolution`、帧率↔`fps_idx` 均一致。

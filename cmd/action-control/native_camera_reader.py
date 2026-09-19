@@ -67,6 +67,12 @@ def bind_library():
         "camera_get_record_state": [C.c_void_p, C.POINTER(C.c_int)],
         "camera_get_capture_state": [C.c_void_p, C.POINTER(C.c_int)],
         "camera_get_mode_profile": [C.c_void_p, C.POINTER(C.c_int)],
+        # Struct-returning getters: a 64-byte buffer avoids the stack overflow a
+        # 4-byte int would cause. Fields are decoded from raw bytes below.
+        "camera_get_video_format": [C.c_void_p, C.POINTER(C.c_ubyte)],
+        "camera_get_video_codec_type": [C.c_void_p, C.POINTER(C.c_ubyte)],
+        "camera_get_video_storage_format": [C.c_void_p, C.POINTER(C.c_ubyte)],
+        "camera_get_eis_status": [C.c_void_p, C.POINTER(C.c_ubyte)],
     }
     for name, args in signatures.items():
         fn = getattr(lib, name)
@@ -136,6 +142,34 @@ def read_mode_profile(lib, device):
     return value.value
 
 
+def read_int(lib, name, device):
+    # Struct getters write >4 bytes; read into 64 bytes and take the leading int.
+    buf = (C.c_ubyte * 64)()
+    rc = getattr(lib, name)(device, buf)
+    if rc != 0:
+        return None  # -1015 (not this mode) / -1009 (not applicable) are expected.
+    return int.from_bytes(bytes(buf[:4]), "little", signed=True)
+
+
+def read_video_settings(lib, device):
+    # Only the video profile exposes these; other modes reject with -1015. Fields
+    # are reported raw; labels are applied from the documented enum tables.
+    fmt_buf = (C.c_ubyte * 64)()
+    settings = {"resolution": None, "resolution_raw": None, "fps": None, "codec": None, "storage": None, "eis": None}
+    if getattr(lib, "camera_get_video_format")(device, fmt_buf) == 0:
+        word0 = int.from_bytes(bytes(fmt_buf[0:4]), "little", signed=True)
+        # The resolution enum is the low byte; the upper bytes carry flags (e.g.
+        # aspect/HDR bits) that vary independently. Documented enum values are all
+        # < 256, so mask to the low byte and keep the raw word for evidence.
+        settings["resolution"] = word0 & 0xFF
+        settings["resolution_raw"] = word0
+        settings["fps"] = int.from_bytes(bytes(fmt_buf[4:8]), "little", signed=True)
+    settings["codec"] = read_int(lib, "camera_get_video_codec_type", device)
+    settings["storage"] = read_int(lib, "camera_get_video_storage_format", device)
+    settings["eis"] = read_int(lib, "camera_get_eis_status", device)
+    return settings
+
+
 def query(lib):
     with camera_connection(lib) as (manager, device):
         return {
@@ -143,6 +177,7 @@ def query(lib):
             "camera_amount": 1,
             "workmode": read_workmode(lib, manager),
             "mode_profile": read_mode_profile(lib, device),
+            "video_settings": read_video_settings(lib, device),
             **read_state(lib, device),
         }
 

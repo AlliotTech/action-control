@@ -91,6 +91,18 @@ function nativeRecordingLabel(status: NativeCameraStatus) {
   return "未知";
 }
 
+function nativeVideoSettingsLabel(status: NativeCameraStatus) {
+  const v = status.native_state.video_settings;
+  if (status.native_state.status !== "ok" || !v) return "—";
+  const parts = [
+    v.resolution_label || (v.resolution !== null ? `分辨率 ${v.resolution}` : null),
+    v.fps_label ? `${v.fps_label}fps` : v.fps !== null ? `${v.fps}fps` : null,
+    v.codec !== null ? `编码 ${v.codec}` : null,
+    v.eis_label ? `防抖 ${v.eis_label}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "—";
+}
+
 export function CameraPage() {
   const native = useAPI<NativeCameraStatus>(
     "native_camera_status",
@@ -220,6 +232,10 @@ export function CameraPage() {
                     ? `代码 ${native.data.native_state.mode_profile}`
                     : "—"}
                 </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">视频设置</dt>
+                <dd className="mt-1">{nativeVideoSettingsLabel(native.data)}</dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">网页预览</dt>

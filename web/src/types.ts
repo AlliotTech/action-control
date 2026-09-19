@@ -67,6 +67,16 @@ export interface NativeCameraStatus {
     mode_profile: number | null;
     record_state: number | null;
     capture_state: number | null;
+    video_settings?: {
+      resolution: number | null;
+      resolution_label?: string;
+      fps: number | null;
+      fps_label?: string;
+      codec: number | null;
+      storage: number | null;
+      eis: number | null;
+      eis_label?: string;
+    };
     observed_at?: string;
     reason?: string;
   };

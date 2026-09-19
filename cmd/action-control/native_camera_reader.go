@@ -19,13 +19,57 @@ import (
 var nativeCameraReaderScript string
 
 type NativeCameraObservation struct {
-	Status       string `json:"status"`
-	Workmode     *int32 `json:"workmode"`
-	ModeProfile  *int32 `json:"mode_profile"`
-	RecordState  *int32 `json:"record_state"`
-	CaptureState *int32 `json:"capture_state"`
-	ObservedAt   string `json:"observed_at,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	Status        string               `json:"status"`
+	Workmode      *int32               `json:"workmode"`
+	ModeProfile   *int32               `json:"mode_profile"`
+	RecordState   *int32               `json:"record_state"`
+	CaptureState  *int32               `json:"capture_state"`
+	VideoSettings *NativeVideoSettings `json:"video_settings,omitempty"`
+	ObservedAt    string               `json:"observed_at,omitempty"`
+	Reason        string               `json:"reason,omitempty"`
+}
+
+// NativeVideoSettings carries the raw values read from the native client plus
+// labels resolved from DJI's documented enums. Enum tables are ported from the
+// official DJI Osmo GPS controller demo (github, MIT, Copyright DJI); only the
+// value->name mappings are reused, no code. Unknown values keep the raw int and
+// an empty label rather than a guess.
+type NativeVideoSettings struct {
+	Resolution      *int32 `json:"resolution"`
+	ResolutionLabel string `json:"resolution_label,omitempty"`
+	ResolutionRaw   *int32 `json:"resolution_raw,omitempty"`
+	FPS             *int32 `json:"fps"`
+	FPSLabel        string `json:"fps_label,omitempty"`
+	Codec           *int32 `json:"codec"`
+	Storage         *int32 `json:"storage"`
+	EIS             *int32 `json:"eis"`
+	EISLabel        string `json:"eis_label,omitempty"`
+}
+
+// Value->name maps from the DJI demo's camera_status_push documentation.
+var nativeResolutionLabels = map[int32]string{
+	10: "1080P", 16: "4K 16:9", 45: "2.7K 16:9", 66: "1080P 9:16",
+	67: "2.7K 9:16", 95: "2.7K 4:3", 103: "4K 4:3", 109: "4K 9:16",
+}
+var nativeFPSLabels = map[int32]string{
+	1: "24", 2: "25", 3: "30", 4: "48", 5: "50", 6: "60", 10: "100", 7: "120", 19: "200", 8: "240",
+}
+var nativeEISLabels = map[int32]string{0: "关闭", 1: "RS", 2: "HS", 3: "RS+", 4: "HB"}
+
+func labelVideoSettings(v *NativeVideoSettings) *NativeVideoSettings {
+	if v == nil {
+		return nil
+	}
+	if v.Resolution != nil {
+		v.ResolutionLabel = nativeResolutionLabels[*v.Resolution]
+	}
+	if v.FPS != nil {
+		v.FPSLabel = nativeFPSLabels[*v.FPS]
+	}
+	if v.EIS != nil {
+		v.EISLabel = nativeEISLabels[*v.EIS]
+	}
+	return v
 }
 
 func nativeObservationError(status, reason string) NativeCameraObservation {
@@ -34,15 +78,16 @@ func nativeObservationError(status, reason string) NativeCameraObservation {
 
 func decodeNativeObservation(data []byte) (NativeCameraObservation, error) {
 	var wire struct {
-		Schema       int    `json:"schema"`
-		Status       string `json:"status"`
-		CameraID     *int   `json:"camera_id"`
-		CameraAmount *int   `json:"camera_amount"`
-		Workmode     *int32 `json:"workmode"`
-		ModeProfile  *int32 `json:"mode_profile"`
-		RecordState  *int32 `json:"record_state"`
-		CaptureState *int32 `json:"capture_state"`
-		Reason       string `json:"reason"`
+		Schema        int                  `json:"schema"`
+		Status        string               `json:"status"`
+		CameraID      *int                 `json:"camera_id"`
+		CameraAmount  *int                 `json:"camera_amount"`
+		Workmode      *int32               `json:"workmode"`
+		ModeProfile   *int32               `json:"mode_profile"`
+		RecordState   *int32               `json:"record_state"`
+		CaptureState  *int32               `json:"capture_state"`
+		VideoSettings *NativeVideoSettings `json:"video_settings"`
+		Reason        string               `json:"reason"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -67,12 +112,13 @@ func decodeNativeObservation(data []byte) (NativeCameraObservation, error) {
 		return NativeCameraObservation{}, errors.New("incomplete native camera observation")
 	}
 	return NativeCameraObservation{
-		Status:       "ok",
-		Workmode:     wire.Workmode,
-		ModeProfile:  wire.ModeProfile,
-		RecordState:  wire.RecordState,
-		CaptureState: wire.CaptureState,
-		ObservedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		Status:        "ok",
+		Workmode:      wire.Workmode,
+		ModeProfile:   wire.ModeProfile,
+		RecordState:   wire.RecordState,
+		CaptureState:  wire.CaptureState,
+		VideoSettings: labelVideoSettings(wire.VideoSettings),
+		ObservedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}, nil
 }
 

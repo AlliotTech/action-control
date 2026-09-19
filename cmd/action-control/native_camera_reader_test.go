@@ -159,3 +159,29 @@ func TestNativeReaderKillsHungChildAndDiscardsPartialOutput(t *testing.T) {
 		t.Fatalf("hung helper was not bounded: %+v", observation)
 	}
 }
+
+func TestNativeVideoSettingsLabeledFromEnums(t *testing.T) {
+	data := `{"schema":1,"status":"ok","camera_id":0,"camera_amount":1,"workmode":3,"mode_profile":1,"record_state":3,"capture_state":0,"video_settings":{"resolution":16,"fps":6,"codec":1,"storage":1,"eis":1}}`
+	obs, err := decodeNativeObservation([]byte(data))
+	if err != nil || obs.VideoSettings == nil {
+		t.Fatalf("video settings lost: %+v %v", obs, err)
+	}
+	v := obs.VideoSettings
+	if v.ResolutionLabel != "4K 16:9" || v.FPSLabel != "60" || v.EISLabel != "RS" {
+		t.Fatalf("labels wrong: %+v", v)
+	}
+	// Unknown enum values keep the raw int and an empty label, never a guess.
+	unknown := `{"schema":1,"status":"ok","camera_id":0,"camera_amount":1,"workmode":3,"mode_profile":1,"record_state":3,"capture_state":0,"video_settings":{"resolution":999,"fps":null,"codec":9,"storage":9,"eis":9}}`
+	obs, err = decodeNativeObservation([]byte(unknown))
+	if err != nil || obs.VideoSettings == nil {
+		t.Fatal(err)
+	}
+	if obs.VideoSettings.ResolutionLabel != "" || obs.VideoSettings.EISLabel != "" || obs.VideoSettings.FPS != nil {
+		t.Fatalf("guessed a label for an unknown value: %+v", obs.VideoSettings)
+	}
+	// video_settings is optional: absence must still decode.
+	none := `{"schema":1,"status":"ok","camera_id":0,"camera_amount":1,"workmode":3,"mode_profile":5,"record_state":3,"capture_state":0}`
+	if obs, err := decodeNativeObservation([]byte(none)); err != nil || obs.VideoSettings != nil {
+		t.Fatalf("absent video_settings mishandled: %+v %v", obs, err)
+	}
+}
