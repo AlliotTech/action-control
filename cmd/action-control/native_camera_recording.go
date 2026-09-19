@@ -79,6 +79,25 @@ func validNativeRecordingAction(action string) bool {
 	return action == "start_recording" || action == "stop_recording"
 }
 
+// capture shares the same native client, operation lock, and dedup as recording,
+// so a photo and a recording toggle can never dispatch at the same time.
+func validNativeAction(action string) bool {
+	return validNativeRecordingAction(action) || action == "capture"
+}
+
+type NativeCaptureControls struct {
+	Capture bool `json:"capture"`
+}
+
+// A photo dispatches only from the verified idle state (not recording, capture
+// state zero). Unknown states never enable the button.
+func nativeCaptureControls(observation NativeCameraObservation) NativeCaptureControls {
+	recording := nativeRecording(observation)
+	idle := recording != nil && !*recording &&
+		observation.CaptureState != nil && *observation.CaptureState == 0
+	return NativeCaptureControls{Capture: idle}
+}
+
 func decodeNativeRecording(data []byte, action string) (NativeRecordingResult, error) {
 	var wire struct {
 		Schema     int                   `json:"schema"`
@@ -98,7 +117,7 @@ func decodeNativeRecording(data []byte, action string) (NativeRecordingResult, e
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return NativeRecordingResult{}, errors.New("extra native recording output")
 	}
-	if wire.Schema != 1 || !validNativeRecordingAction(action) || wire.Action != action || wire.Dispatched == nil {
+	if wire.Schema != 1 || !validNativeAction(action) || wire.Action != action || wire.Dispatched == nil {
 		return NativeRecordingResult{}, errors.New("incomplete native recording result")
 	}
 	for _, state := range []*NativeRecordingState{wire.Before, wire.After} {
@@ -106,28 +125,44 @@ func decodeNativeRecording(data []byte, action string) (NativeRecordingResult, e
 			return NativeRecordingResult{}, errors.New("incomplete native recording state")
 		}
 	}
-	target := int32(1)
-	if action == "stop_recording" {
-		target = 3
-	}
-	targetObserved := wire.After != nil && *wire.After.RecordState == target
 	dispatched, accepted := *wire.Dispatched, wire.NativeCode != nil && *wire.NativeCode == 0
 	valid := false
-	switch wire.Outcome {
-	case "confirmed":
-		valid = dispatched && accepted && wire.Before != nil && targetObserved
-	case "accepted":
-		valid = dispatched && accepted && wire.Before != nil
-	case "already":
-		valid = !dispatched && wire.NativeCode == nil && wire.Before != nil && *wire.Before.RecordState == target && targetObserved
-	case "blocked":
-		valid = !dispatched && wire.NativeCode == nil && wire.Before != nil && wire.After == nil
-	case "rejected":
-		valid = dispatched && wire.NativeCode != nil && *wire.NativeCode != 0 && wire.Before != nil
-	case "not_sent":
-		valid = !dispatched && wire.NativeCode == nil && wire.After == nil
-	case "unknown":
-		valid = dispatched && wire.After == nil
+	if action == "capture" {
+		// A photo has no stable target state, so no "confirmed"/"already".
+		switch wire.Outcome {
+		case "accepted":
+			valid = dispatched && accepted && wire.Before != nil
+		case "blocked":
+			valid = !dispatched && wire.NativeCode == nil && wire.Before != nil && wire.After == nil
+		case "rejected":
+			valid = dispatched && wire.NativeCode != nil && *wire.NativeCode != 0 && wire.Before != nil
+		case "not_sent":
+			valid = !dispatched && wire.NativeCode == nil && wire.After == nil
+		case "unknown":
+			valid = dispatched && wire.After == nil
+		}
+	} else {
+		target := int32(1)
+		if action == "stop_recording" {
+			target = 3
+		}
+		targetObserved := wire.After != nil && *wire.After.RecordState == target
+		switch wire.Outcome {
+		case "confirmed":
+			valid = dispatched && accepted && wire.Before != nil && targetObserved
+		case "accepted":
+			valid = dispatched && accepted && wire.Before != nil
+		case "already":
+			valid = !dispatched && wire.NativeCode == nil && wire.Before != nil && *wire.Before.RecordState == target && targetObserved
+		case "blocked":
+			valid = !dispatched && wire.NativeCode == nil && wire.Before != nil && wire.After == nil
+		case "rejected":
+			valid = dispatched && wire.NativeCode != nil && *wire.NativeCode != 0 && wire.Before != nil
+		case "not_sent":
+			valid = !dispatched && wire.NativeCode == nil && wire.After == nil
+		case "unknown":
+			valid = dispatched && wire.After == nil
+		}
 	}
 	if !valid {
 		return NativeRecordingResult{}, errors.New("inconsistent native recording result")
@@ -146,8 +181,8 @@ func nativeRecordingNotSent(reason string) NativeRecordingResult {
 func runNativeRecording(ctx context.Context, a *App, action string) NativeRecordingResult {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	if !validNativeRecordingAction(action) {
-		return nativeRecordingNotSent("不支持的原生录像操作。")
+	if !validNativeAction(action) {
+		return nativeRecordingNotSent("不支持的原生相机操作。")
 	}
 	if err := a.nativeIO.acquire(ctx); err != nil {
 		return nativeRecordingNotSent("等待原生相机访问已超时或取消。")
@@ -191,6 +226,20 @@ func (c *cameraController) executeNativeRecording(action string) NativeRecording
 }
 
 func nativeRecordingMessage(result NativeRecordingResult) string {
+	if result.Action == "capture" {
+		switch result.Outcome {
+		case "accepted":
+			return "相机已受理拍照请求，请在相册确认新照片。"
+		case "blocked":
+			return "相机当前状态不支持拍照，请先停止录像并稍后刷新状态。"
+		case "rejected":
+			return fmt.Sprintf("相机返回错误（代码 %d），请查看相机提示和当前状态。", *result.NativeCode)
+		case "not_sent":
+			return "拍照请求未发送，请检查原生相机状态。"
+		default:
+			return "拍照请求结果未知，请先查看原生状态，确认后再操作。"
+		}
+	}
 	verb := "开始"
 	if result.Action == "stop_recording" {
 		verb = "停止"
@@ -290,13 +339,21 @@ func waitNativeRecording(ctx context.Context, attempt *nativeRecordingAttempt, r
 	}
 }
 
-func (controller *nativeRecordingController) handle(w http.ResponseWriter, r *http.Request) {
+func (controller *nativeRecordingController) handleRecording(w http.ResponseWriter, r *http.Request) {
+	controller.serve(w, r, validNativeRecordingAction, "需要明确的录像操作与 8–80 位 request_id")
+}
+
+func (controller *nativeRecordingController) handleCapture(w http.ResponseWriter, r *http.Request) {
+	controller.serve(w, r, func(a string) bool { return a == "capture" }, "需要 action=capture 与 8–80 位 request_id")
+}
+
+func (controller *nativeRecordingController) serve(w http.ResponseWriter, r *http.Request, allowed func(string) bool, invalidMsg string) {
 	var request nativeRecordingRequest
 	if !readJSON(w, r, &request) {
 		return
 	}
-	if !validNativeRecordingAction(request.Action) || !nativeRequestIDPattern.MatchString(request.RequestID) {
-		jsonError(w, 400, "invalid_native_recording_request", errors.New("需要明确的录像操作与 8–80 位 request_id"))
+	if !allowed(request.Action) || !nativeRequestIDPattern.MatchString(request.RequestID) {
+		jsonError(w, 400, "invalid_native_recording_request", errors.New(invalidMsg))
 		return
 	}
 	if err := controller.camera.app.RequireManaged(); err != nil {

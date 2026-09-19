@@ -181,7 +181,13 @@ func (d *Decoder) Feed(at time.Time, ethernet []byte) (result *AccessUnit, err e
 	}
 	word := binary.LittleEndian.Uint32(data[16:20])
 	fid, count, index := int64(word&255), int(word>>8&63), int(word>>15&63)
-	if word&(1<<14) != 0 || word>>21 != 0 || count == 0 || index >= count {
+	// Live Mimo sets flag bits above bit 20 (byte2 bits 5-6, byte3) on a subset
+	// of frames. They carry no fragmentation state: fid/count/index still parse
+	// correctly and the frames reassemble and decode as ordinary I/P slices, so
+	// they are not treated as corruption. bit 14 stays reserved for FEC, which we
+	// still refuse; the native media header and NAL checks in multimedia() remain
+	// the real content gate against unknown or damaged payloads.
+	if word&(1<<14) != 0 || count == 0 || index >= count {
 		return nil, errors.New("FEC or unverified video fragment layout")
 	}
 	if d.haveKey && key != d.key {

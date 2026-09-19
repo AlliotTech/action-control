@@ -225,3 +225,66 @@ func TestNativeRecordingEndpointRejectsInvalidRequestsBeforeHardware(t *testing.
 		t.Fatalf("local mode advertised recording controls: %+v %v", status, err)
 	}
 }
+
+func TestNativeCaptureDecodeRejectsUnprovenResults(t *testing.T) {
+	// A photo has no stable target, so it never claims confirmed or already.
+	for _, data := range []string{
+		`{"schema":1,"action":"capture","outcome":"confirmed","dispatched":true,"native_code":0,"before":{"record_state":3,"capture_state":0},"after":{"record_state":3,"capture_state":0}}`,
+		`{"schema":1,"action":"capture","outcome":"already","dispatched":false,"before":{"record_state":3,"capture_state":0},"after":{"record_state":3,"capture_state":0}}`,
+		`{"schema":1,"action":"capture","outcome":"accepted","dispatched":true,"native_code":0}`,
+		`{"schema":1,"action":"capture","outcome":"accepted","dispatched":false,"before":{"record_state":3,"capture_state":0}}`,
+		`{"schema":1,"action":"capture","outcome":"rejected","dispatched":true,"native_code":0,"before":{"record_state":3,"capture_state":0}}`,
+	} {
+		if result, err := decodeNativeRecording([]byte(data), "capture"); err == nil {
+			t.Fatalf("unproven capture result accepted: %s -> %+v", data, result)
+		}
+	}
+	for _, data := range []string{
+		`{"schema":1,"action":"capture","outcome":"accepted","dispatched":true,"native_code":0,"before":{"record_state":3,"capture_state":0},"after":{"record_state":3,"capture_state":0}}`,
+		`{"schema":1,"action":"capture","outcome":"blocked","dispatched":false,"before":{"record_state":1,"capture_state":0}}`,
+		`{"schema":1,"action":"capture","outcome":"rejected","dispatched":true,"native_code":-1010,"before":{"record_state":3,"capture_state":0}}`,
+		`{"schema":1,"action":"capture","outcome":"not_sent","dispatched":false}`,
+		`{"schema":1,"action":"capture","outcome":"unknown","dispatched":true,"native_code":0,"before":{"record_state":3,"capture_state":0}}`,
+	} {
+		result, err := decodeNativeRecording([]byte(data), "capture")
+		if err != nil || result.Outcome == "confirmed" || nativeRecordingMessage(result) == "" {
+			t.Fatalf("valid capture result lost: %s -> %+v %v", data, result, err)
+		}
+	}
+}
+
+func TestNativeCaptureControlsOnlyEnableWhenIdle(t *testing.T) {
+	idle := func(record, capture int32) NativeCameraObservation {
+		return NativeCameraObservation{Status: "ok", RecordState: &record, CaptureState: &capture}
+	}
+	if !nativeCaptureControls(idle(3, 0)).Capture {
+		t.Fatal("idle camera did not enable capture")
+	}
+	for _, o := range []NativeCameraObservation{idle(1, 0), idle(3, 1), idle(2, 0), {Status: "ok"}} {
+		if nativeCaptureControls(o).Capture {
+			t.Fatalf("capture enabled from a non-idle state: %+v", o)
+		}
+	}
+}
+
+func TestNativeCaptureEndpointRejectsRecordingActions(t *testing.T) {
+	a, handler := testApplication(t)
+	for _, data := range []string{
+		`{}`, `{"action":"capture"}`, `{"action":"start_recording","request_id":"request-1"}`,
+		`{"action":"stop_recording","request_id":"request-1"}`, `{"action":"capture","request_id":"short"}`,
+	} {
+		response := requestTest(a, handler, "POST", "/api/native_capture", strings.NewReader(data), nil)
+		if response.Code != 400 {
+			t.Fatalf("bad capture request passed validation: %s %d", data, response.Code)
+		}
+	}
+	response := requestTest(a, handler, "POST", "/api/native_capture", strings.NewReader(`{"action":"capture","request_id":"capture-1"}`), nil)
+	if response.Code != 503 || !strings.Contains(response.Body.String(), "device_unavailable") {
+		t.Fatal("local mode passed the capture hardware guard: ", response.Body.String())
+	}
+	response = requestTest(a, handler, "GET", "/api/native_camera_status", nil, nil)
+	var status NativeCameraStatus
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil || status.CaptureControls.Capture {
+		t.Fatalf("local mode advertised capture control: %+v %v", status, err)
+	}
+}

@@ -1,4 +1,4 @@
-Mimo 网页预览转发，候选版本 0.1.11，2026-09-19。
+Mimo 网页预览转发，已部署并实机验收 0.1.12，2026-09-19。0.1.12 修复了实时直播因分片头标志位被误拒而约 1 秒中止的问题。
 
 **手机 Mimo 保持实时预览时，Action Control 可以把同一份原生 H.264 视频转发给网页。** 相机继续持有采集、编码、录像、存储和网络。当前功能没有建立独立原生订阅；关闭 Mimo、切到相册或手机后台停止发流时，网页也会断流。
 
@@ -63,6 +63,15 @@ ffmpeg -v error -xerror -i preview.ts -fps_mode passthrough -enc_time_base 1:900
 
 Go 测试覆盖边界/截断、短读、大小端/纳秒 pcap、未知格式、片内乱序和冲突、回绕、缺帧及原生时钟重置后的关键帧恢复、TS 分包与时间戳、共享进程、慢连接、最后一个网页退出、等待超时、HTTP 取消和应用退出。5 秒模糊测试执行约 91 万次，没有崩溃。
 
-实机部署和网页播放验收尚待完成；完成后在此补充版本、前后服务状态、播放/退出结果。iOS/Safari、所有拍摄设置及完整配对协议不在当前验证范围。
+实机验收（0.1.11，设备 `123456789ABCDEF`，未重启相机）：
+
+- 部署：`0.1.10 → 0.1.11`，安装器自检通过，`/api/health` 报告 `version=0.1.11`。部署前后 `dji_camera3/dji_media/gui` 均 running，`recording=false`、`previewing=null`、`preview_available=false`；升级后 `control_available=true`。
+- 接口（无 Mimo，本机 curl）：`/api/mimo_preview_status` 只读返回 `state=idle`、`clients=0`、`source=native_mimo_mirror`、`requires_mimo=true`；`GET /api/mimo_preview_stream` 返回 `503 mimo_preview_unavailable`，未启动观察进程（`clients=0`、`video_packets=0`）；`HEAD` 返回 `405 Allow: GET`；带 `Origin` 的跨来源 `GET` 返回 `403`。
+- 浏览器（部署后的控制台页）：预览卡片正常渲染；原生服务就绪后“连接预览”可用；无 Mimo 时点击连接，服务端返回 503、不建观察进程，页面停在“等待画面…”不崩溃，点“断开预览”回到“预览已断开”并可重连。
+- 离线管线本机复跑：`go test ./internal/mimopreview` ok、`go test -race ./cmd/action-control -run 'TestMimoPreview|TestNative'` ok；三段真实抓包 TS（基准／约 90 秒共存／本地录像启停）均通过 `ffmpeg -xerror ... -enc_time_base 1:90000` 严格解码，退出码 0。
+
+手机侧实机验收（0.1.12，Mimo 保持实时预览，控制台 `http://127.0.0.1:59610`）：浏览器 `<video>` 持续播放，`currentTime` 递增、1280×720、`readyState=4`、未暂停；服务端 `state=streaming`、`clients=1`、`output_frames` 持续增长。断开／关闭最后一个网页后 `clients=0`、`state=idle`、无残留观察进程与错误。curl 拉 6 秒直播得 `200 video/MP2T`、3,353,732 字节，`output_frames=186`、`skipped=2`、`incomplete=0`、`discontinuities=0`、`native_clock_resets=0`、无错误；该 TS 经 `ffmpeg -xerror ... -enc_time_base 1:90000` 严格解码 186 帧无错。iOS/Safari、所有拍摄设置及完整配对协议不在当前验证范围。
+
+直播中止根因与修复（0.1.12）：0.1.11 下真实直播先正常吐约 24 帧（406268 字节）随即停在 `FEC or unverified video fragment layout` 且不自恢复。抓 live 会话 `live9004.pcap`（1200 包 / 743 个 type2 视频包）逐包解分片头 `data[16:20]`：`bit14`（FEC 标志）**从未置位**——报错名不副实。真正命中的是 `decoder.go` 旧守卫里的 `word>>21 != 0`：743 包中 111 包（约 15%）的 byte2 高两位（word bit21–22，常见 `0x60`）或 byte3（如 `0x13`）带有离线三段抓包从未出现的标志位。将这些帧按 `count`/`index` 重组后经 `multimedia()` 校验，全部是合法的 I/P 帧（NAL 1/5，无坏帧），说明高位是与分片无关的标志，守卫对三段离线样本过拟合。修复：守卫改为只拒 `bit14`(FEC)、`count==0`、`index>=count`，把内容合法性交给 `multimedia()` 的原生媒体头/XOR/长度/NAL 校验（真正的内容闸门）。`live9004.pcap` 经修复后解码器重放得 63 完整帧 / 45 输出帧、无错误并严格解码通过；0.1.12 实机 6 秒直播得 186 输出帧、`state=streaming`、无 `FEC/unverified` 中止。新增回归测试 `TestLiveFragmentFlagsAreAccepted`（带标志帧须解码），并把原 `unknown flags` 用例替换为仍应拒绝的 `index past count`。
 
 本轮证据目录为 `.build-tools/mimo-native-analysis/web-preview-20260919/`：`replay.json`、`decode.json`、`decode-with-explicit-timebase.json` 及三段 TS 文件。抓包及含画面的产物不进入仓库或发布包。独立消费者调查见 [原生预览生命周期](NATIVE_PREVIEW_LIFECYCLE.md)，协议与先前 Mimo 共存证据见 [Mimo 预览协议](MIMO_PREVIEW_PROTOCOL.md)。

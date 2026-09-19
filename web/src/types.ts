@@ -63,6 +63,7 @@ export interface NativeCameraStatus {
       | "busy"
       | "error"
       | "timeout";
+    workmode: number | null;
     record_state: number | null;
     capture_state: number | null;
     observed_at?: string;
@@ -72,6 +73,7 @@ export interface NativeCameraStatus {
   previewing: boolean | null;
   control_available: boolean;
   recording_controls: { start: boolean; stop: boolean };
+  capture_controls: { capture: boolean };
   preview_available: boolean;
   services: {
     unit: string;
@@ -85,6 +87,7 @@ export interface NativeCameraStatus {
   reason?: string;
 }
 export type NativeRecordingAction = "start_recording" | "stop_recording";
+export type NativeAction = NativeRecordingAction | "capture";
 export interface MimoPreviewStatus {
   source: "native_mimo_mirror";
   requires_mimo: true;
@@ -108,7 +111,7 @@ export interface MimoPreviewStatus {
 export interface NativeRecordingResult {
   source: "native_binder";
   request_id: string;
-  action: NativeRecordingAction;
+  action: NativeAction;
   outcome:
     | "confirmed"
     | "already"

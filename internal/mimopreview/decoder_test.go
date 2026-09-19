@@ -202,7 +202,7 @@ func TestUnknownFormatsAndSessionChangesAreRejected(t *testing.T) {
 		"UDP length":    func(b []byte) { b[38], b[39] = 255, 255 },
 		"SW checksum":   func(b []byte) { b[49] ^= 1 },
 		"FEC":           func(b []byte) { b[59] |= 0x40 },
-		"unknown flags": func(b []byte) { b[60] |= 0x20 },
+		"index past count": func(b []byte) { b[59] |= 0x80 },
 		"MM checksum":   func(b []byte) { b[72] ^= 1 },
 		"MM length":     func(b []byte) { b[66] = 255 },
 	}
@@ -230,6 +230,22 @@ func TestUnknownFormatsAndSessionChangesAreRejected(t *testing.T) {
 	}
 	if _, err := d.Feed(time.Unix(103, 0), good); err == nil {
 		t.Fatal("guessed counter after long silence")
+	}
+}
+
+func TestLiveFragmentFlagsAreAccepted(t *testing.T) {
+	// Observed live Mimo flags on valid P/I frames: byte2 bits 5-6 (word bits
+	// 21-22) and byte3. They carry no fragmentation state and must not stop the
+	// stream. count/index are untouched here (single fragment 0 of 1).
+	b := testEthernet(testFragment(1, 1, 0, testMedia(testKey, 1000)))
+	b[60] |= 0x60
+	b[61] = 0x13
+	unit, err := (&Decoder{}).Feed(time.Unix(100, 0), b)
+	if err != nil {
+		t.Fatalf("flagged fragment rejected: %v", err)
+	}
+	if unit == nil || !unit.Keyframe {
+		t.Fatalf("flagged keyframe not decoded: unit=%v", unit)
 	}
 }
 

@@ -622,7 +622,8 @@ func RegisterCamera(mux *http.ServeMux, a *App) (func() error, error) {
 		jsonResponse(w, 200, readNativeCameraStatus(r.Context(), a))
 	})
 	nativeRecording := &nativeRecordingController{camera: c}
-	mux.HandleFunc("POST /api/native_recording", nativeRecording.handle)
+	mux.HandleFunc("POST /api/native_recording", nativeRecording.handleRecording)
+	mux.HandleFunc("POST /api/native_capture", nativeRecording.handleCapture)
 	mux.HandleFunc("GET /api/mimo_preview_status", func(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 200, c.mimoPreview.status())
 	})

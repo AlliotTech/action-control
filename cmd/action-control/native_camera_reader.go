@@ -20,6 +20,7 @@ var nativeCameraReaderScript string
 
 type NativeCameraObservation struct {
 	Status       string `json:"status"`
+	Workmode     *int32 `json:"workmode"`
 	RecordState  *int32 `json:"record_state"`
 	CaptureState *int32 `json:"capture_state"`
 	ObservedAt   string `json:"observed_at,omitempty"`
@@ -36,6 +37,7 @@ func decodeNativeObservation(data []byte) (NativeCameraObservation, error) {
 		Status       string `json:"status"`
 		CameraID     *int   `json:"camera_id"`
 		CameraAmount *int   `json:"camera_amount"`
+		Workmode     *int32 `json:"workmode"`
 		RecordState  *int32 `json:"record_state"`
 		CaptureState *int32 `json:"capture_state"`
 		Reason       string `json:"reason"`
@@ -59,11 +61,12 @@ func decodeNativeObservation(data []byte) (NativeCameraObservation, error) {
 			return NativeCameraObservation{}, errors.New("invalid native reader status")
 		}
 	}
-	if wire.CameraID == nil || *wire.CameraID != 0 || wire.CameraAmount == nil || *wire.CameraAmount != 1 || wire.RecordState == nil || wire.CaptureState == nil {
+	if wire.CameraID == nil || *wire.CameraID != 0 || wire.CameraAmount == nil || *wire.CameraAmount != 1 || wire.RecordState == nil || wire.CaptureState == nil || wire.Workmode == nil {
 		return NativeCameraObservation{}, errors.New("incomplete native camera observation")
 	}
 	return NativeCameraObservation{
 		Status:       "ok",
+		Workmode:     wire.Workmode,
 		RecordState:  wire.RecordState,
 		CaptureState: wire.CaptureState,
 		ObservedAt:   time.Now().UTC().Format(time.RFC3339Nano),
@@ -186,6 +189,7 @@ func addNativeCameraObservation(ctx context.Context, a *App, status *NativeCamer
 			status.Source = "native_binder"
 			status.ControlAvailable = true
 			status.RecordingControls = nativeRecordingControls(status.NativeState)
+			status.CaptureControls = nativeCaptureControls(status.NativeState)
 		}
 		return
 	}

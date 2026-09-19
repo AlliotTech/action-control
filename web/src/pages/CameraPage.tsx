@@ -25,7 +25,7 @@ import type {
   CameraStatus,
   Config,
   NativeCameraStatus,
-  NativeRecordingAction,
+  NativeAction,
   NativeRecordingResult,
   NativeServiceState,
 } from "../types";
@@ -97,14 +97,13 @@ export function CameraPage() {
   );
   const capture = useAPI<CameraStatus>("camera_status", undefined, 3000);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [nativeAction, setNativeAction] =
-    useState<NativeRecordingAction | null>(null);
+  const [nativeAction, setNativeAction] = useState<NativeAction | null>(null);
   const [nativeResult, setNativeResult] =
     useState<NativeRecordingResult | null>(null);
   const [nativeError, setNativeError] = useState("");
   const nativeBusy = useRef(false);
 
-  async function record(action: NativeRecordingAction) {
+  async function runNative(action: NativeAction) {
     if (nativeBusy.current) return;
     nativeBusy.current = true;
     setNativeAction(action);
@@ -116,15 +115,16 @@ export function CameraPage() {
         crypto.getRandomValues(new Uint8Array(16)),
         (byte) => byte.toString(16).padStart(2, "0"),
       ).join("");
+      const endpoint = action === "capture" ? "native_capture" : "native_recording";
       setNativeResult(
-        await post<NativeRecordingResult>("native_recording", {
+        await post<NativeRecordingResult>(endpoint, {
           action,
           request_id: requestID,
         }),
       );
     } catch (error) {
       setNativeError(
-        `录像请求未完整返回：${errorText(error)}。请先检查相机当前状态，再决定下一步操作。`,
+        `原生请求未完整返回：${errorText(error)}。请先检查相机当前状态，再决定下一步操作。`,
       );
     } finally {
       await invalidate("native_camera_status");
@@ -197,6 +197,15 @@ export function CameraPage() {
                 <dd className="mt-1">{nativeRecordingLabel(native.data)}</dd>
               </div>
               <div>
+                <dt className="text-muted-foreground">原生工作模式</dt>
+                <dd className="mt-1">
+                  {native.data.native_state.status === "ok" &&
+                  native.data.native_state.workmode !== null
+                    ? `代码 ${native.data.native_state.workmode}`
+                    : "—"}
+                </dd>
+              </div>
+              <div>
                 <dt className="text-muted-foreground">网页预览</dt>
                 <dd className="mt-1">下方连接 Mimo 画面</dd>
               </div>
@@ -213,7 +222,7 @@ export function CameraPage() {
                   !native.data.control_available ||
                   !native.data.recording_controls.start
                 }
-                onClick={() => void record("start_recording")}
+                onClick={() => void runNative("start_recording")}
               >
                 <Play />
                 {nativeAction === "start_recording"
@@ -227,16 +236,28 @@ export function CameraPage() {
                   !native.data.control_available ||
                   !native.data.recording_controls.stop
                 }
-                onClick={() => void record("stop_recording")}
+                onClick={() => void runNative("stop_recording")}
               >
                 <Square />
                 {nativeAction === "stop_recording"
                   ? "正在请求停止…"
                   : "停止录像"}
               </Button>
+              <Button
+                variant="outline"
+                disabled={
+                  nativeAction !== null ||
+                  !native.data.control_available ||
+                  !native.data.capture_controls.capture
+                }
+                onClick={() => void runNative("capture")}
+              >
+                <Camera />
+                {nativeAction === "capture" ? "正在请求拍照…" : "拍照"}
+              </Button>
             </div>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              沿用相机当前拍摄设置，录像由相机保存。原生拍照暂未接入网页。
+              沿用相机当前拍摄设置，录像和照片均由相机保存。拍照仅在相机空闲时可用。
             </p>
             {nativeResult && (
               <div className="mt-4">

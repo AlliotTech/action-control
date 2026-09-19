@@ -53,6 +53,11 @@ class FakeLibrary:
         output._obj.value = 0
         return self.call("capture_state")
 
+    def camera_manager_get_workmode(self, manager, output):
+        assert manager.value == 101
+        output._obj.value = 3
+        return self.call("workmode")
+
     def camera_manager_destroy(self, manager):
         assert manager.value == 101
         return self.call("destroy")
@@ -62,11 +67,11 @@ class ReaderTests(unittest.TestCase):
     def test_opaque_handles_and_null_callbacks(self):
         lib = FakeLibrary()
         self.assertEqual(reader.query(lib), {
-            "camera_id": 0, "camera_amount": 1, "record_state": 3, "capture_state": 0,
+            "camera_id": 0, "camera_amount": 1, "workmode": 3, "record_state": 3, "capture_state": 0,
         })
         self.assertTrue(lib.assert_null_params)
         self.assertEqual(C.sizeof(reader.CreateParams), 16)
-        self.assertEqual(lib.calls, ["create", "amount", "connect", "record_state", "capture_state", "destroy"])
+        self.assertEqual(lib.calls, ["create", "amount", "connect", "workmode", "record_state", "capture_state", "destroy"])
 
     def test_failure_never_uses_missing_handles_and_always_releases_manager(self):
         for failure in ("create", "amount", "connect", "record_state", "capture_state", "destroy"):
@@ -263,6 +268,93 @@ class RecordingTests(unittest.TestCase):
         with patch.object(reader, "check_environment"), patch.object(reader, "bind_library") as load, patch.object(reader.socket, "socket") as socket:
             socket.return_value.__enter__.return_value.bind.side_effect = OSError(errno.EADDRINUSE, "busy")
             result = reader.record("stop_recording")
+        self.assertFalse(result["dispatched"])
+        self.assertEqual(result["outcome"], "not_sent")
+        load.assert_not_called()
+
+
+class CaptureLibrary(FakeLibrary):
+    def __init__(self, states, code=0, fail=None, fail_after=None):
+        super().__init__(fail=fail)
+        self.states = iter(states)
+        self.current = (3, 0)
+        self.sent = False
+        self.code, self.fail_after = code, fail_after
+        self.camera_start_capture = Mock(side_effect=lambda camera: self.dispatch(camera))
+
+    def dispatch(self, camera):
+        assert camera.value == 202
+        self.calls.append("capture")
+        self.sent = True
+        if self.fail_after == "dispatch":
+            raise OSError("native connection failed during dispatch")
+        return self.code
+
+    def camera_get_record_state(self, camera, output):
+        assert camera.value == 202
+        self.current = next(self.states, self.current)
+        output._obj.value = self.current[0]
+        return self.call("record_state")
+
+    def camera_get_capture_state(self, camera, output):
+        assert camera.value == 202
+        output._obj.value = self.current[1]
+        rc = self.call("capture_state")
+        return -1001 if self.sent and self.fail_after == "read" else rc
+
+
+class CaptureTests(unittest.TestCase):
+    def run_capture(self, lib):
+        with patch.object(reader, "check_environment"), patch.object(reader, "bind_library", return_value=lib), patch.object(reader.socket, "socket"), patch.object(reader.time, "sleep"):
+            return reader.capture()
+
+    def test_idle_capture_is_accepted_never_confirmed(self):
+        lib = CaptureLibrary([(3, 0)])
+        with patch.object(reader.time, "monotonic", side_effect=[0, 3]):
+            result = self.run_capture(lib)
+        self.assertEqual(result["outcome"], "accepted")
+        self.assertEqual(result["native_code"], 0)
+        self.assertEqual(result["before"], {"record_state": 3, "capture_state": 0})
+        lib.camera_start_capture.assert_called_once()
+        self.assertEqual(lib.calls[-1], "destroy")
+
+    def test_non_idle_states_block_capture(self):
+        for state in [(1, 0), (2, 0), (3, 1), (0, 0), (3, -1)]:
+            lib = CaptureLibrary([state])
+            result = self.run_capture(lib)
+            self.assertEqual(result["outcome"], "blocked")
+            self.assertFalse(result["dispatched"])
+            lib.camera_start_capture.assert_not_called()
+            self.assertEqual(lib.calls[-1], "destroy")
+
+    def test_native_rejection_keeps_code_and_never_retries(self):
+        lib = CaptureLibrary([(3, 0)], code=-1021)
+        result = self.run_capture(lib)
+        self.assertEqual(result["outcome"], "rejected")
+        self.assertEqual(result["native_code"], -1021)
+        lib.camera_start_capture.assert_called_once()
+
+    def test_uncertain_dispatch_read_or_cleanup_never_claims_success(self):
+        for fail, fail_after in ((None, "dispatch"), (None, "read"), ("destroy", None)):
+            lib = CaptureLibrary([(3, 0), (3, 0)], fail=fail, fail_after=fail_after)
+            result = self.run_capture(lib)
+            self.assertEqual(result["outcome"], "unknown")
+            self.assertTrue(result["dispatched"])
+            self.assertIsNone(result["after"])
+            self.assertEqual(lib.calls[-1], "destroy")
+            lib.camera_start_capture.assert_called_once()
+
+    def test_read_failure_prevents_any_command(self):
+        lib = CaptureLibrary([(3, 0)], fail="capture_state")
+        result = self.run_capture(lib)
+        self.assertEqual(result["outcome"], "not_sent")
+        self.assertFalse(result["dispatched"])
+        lib.camera_start_capture.assert_not_called()
+
+    def test_other_native_client_blocks_capture_before_loading(self):
+        with patch.object(reader, "check_environment"), patch.object(reader, "bind_library") as load, patch.object(reader.socket, "socket") as socket:
+            socket.return_value.__enter__.return_value.bind.side_effect = OSError(errno.EADDRINUSE, "busy")
+            result = reader.capture()
         self.assertFalse(result["dispatched"])
         self.assertEqual(result["outcome"], "not_sent")
         load.assert_not_called()

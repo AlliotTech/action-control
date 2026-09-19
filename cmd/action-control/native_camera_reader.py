@@ -62,6 +62,7 @@ def bind_library():
         "camera_manager_create": [C.POINTER(CreateParams), C.POINTER(C.c_void_p)],
         "camera_manager_destroy": [C.c_void_p],
         "camera_manager_get_camera_amount": [C.c_void_p, C.POINTER(C.c_int)],
+        "camera_manager_get_workmode": [C.c_void_p, C.POINTER(C.c_int)],
         "camera_manager_connect_camera": [C.c_void_p, C.c_int, C.POINTER(C.c_void_p)],
         "camera_get_record_state": [C.c_void_p, C.POINTER(C.c_int)],
         "camera_get_capture_state": [C.c_void_p, C.POINTER(C.c_int)],
@@ -97,7 +98,7 @@ def camera_connection(lib):
         checked("connect", lib.camera_manager_connect_camera, manager, 0, C.byref(device))
         if not device.value:
             raise ProbeError("error", "connect returned an empty camera.")
-        yield device
+        yield manager, device
     finally:
         # This API disconnects this manager's devices, removes its own listeners,
         # releases client objects, and frees wrappers. No handle offsets are used.
@@ -118,9 +119,22 @@ def read_state(lib, device):
     return result
 
 
+def read_workmode(lib, manager):
+    value = C.c_int(-2147483648)
+    checked("workmode", lib.camera_manager_get_workmode, manager, C.byref(value))
+    if value.value == -2147483648:
+        raise ProbeError("error", "workmode was not written.")
+    return value.value
+
+
 def query(lib):
-    with camera_connection(lib) as device:
-        return {"camera_id": 0, "camera_amount": 1, **read_state(lib, device)}
+    with camera_connection(lib) as (manager, device):
+        return {
+            "camera_id": 0,
+            "camera_amount": 1,
+            "workmode": read_workmode(lib, manager),
+            **read_state(lib, device),
+        }
 
 
 @contextmanager
@@ -172,7 +186,7 @@ def record(action):
         with native_library() as lib:
             fn = getattr(lib, name)
             fn.argtypes, fn.restype = [C.c_void_p], C.c_int
-            with camera_connection(lib) as device:
+            with camera_connection(lib) as (_manager, device):
                 before = read_state(lib, device)
                 result["before"] = before
                 if before["record_state"] == target:
@@ -210,13 +224,62 @@ def record(action):
     return result
 
 
+def capture():
+    # A photo is a one-shot action, not a toggle to a stable target state. We
+    # only dispatch when idle, then report the native code and observed capture
+    # state. We do not invent a "capture complete" code from the raw integer;
+    # the saved photo file is confirmed separately by the media layer.
+    result = {
+        "schema": 1, "action": "capture", "outcome": "not_sent",
+        "dispatched": False, "native_code": None,
+        "before": None, "after": None, "reason": "",
+    }
+    try:
+        with native_library() as lib:
+            fn = lib.camera_start_capture
+            fn.argtypes, fn.restype = [C.c_void_p], C.c_int
+            with camera_connection(lib) as (_manager, device):
+                before = read_state(lib, device)
+                result["before"] = before
+                if before["record_state"] != 3 or before["capture_state"] != 0:
+                    result.update(outcome="blocked", reason="Native camera is not idle for capture.")
+                else:
+                    # Set uncertainty BEFORE the call: a native request cannot be
+                    # undone by killing this process, and must not be retried.
+                    result.update(dispatched=True, outcome="unknown")
+                    rc = fn(device)
+                    result["native_code"] = rc
+                    if rc != 0:
+                        result.update(outcome="rejected", reason="camera_start_capture returned %d." % rc)
+                    else:
+                        # Observe the transient capture state settle; never toggle
+                        # or retry. Native service owns all transitions.
+                        result["outcome"] = "accepted"
+                        deadline = time.monotonic() + 2.0
+                        while True:
+                            result["after"] = read_state(lib, device)
+                            if time.monotonic() >= deadline:
+                                break
+                            time.sleep(0.1)
+    except (ProbeError, OSError, AttributeError) as exc:
+        result["outcome"] = "unknown" if result["dispatched"] else "not_sent"
+        result["reason"] = str(exc)
+        result["after"] = None
+    return result
+
+
 def main():
     # Native logging must not be mistaken for the JSON protocol. Keep the saved
     # output descriptor private; vendor output goes to the bounded stderr pipe.
     output = os.dup(1)
     os.dup2(2, 1)
     try:
-        result = observe() if len(sys.argv) == 1 else record(sys.argv[1] if len(sys.argv) == 2 else "")
+        if len(sys.argv) == 1:
+            result = observe()
+        elif sys.argv[1] == "capture":
+            result = capture()
+        else:
+            result = record(sys.argv[1] if len(sys.argv) == 2 else "")
         os.write(output, (json.dumps(result, separators=(",", ":")) + "\n").encode())
     finally:
         os.close(output)
