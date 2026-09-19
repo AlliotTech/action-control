@@ -21,6 +21,7 @@ var nativeCameraReaderScript string
 type NativeCameraObservation struct {
 	Status       string `json:"status"`
 	Workmode     *int32 `json:"workmode"`
+	ModeProfile  *int32 `json:"mode_profile"`
 	RecordState  *int32 `json:"record_state"`
 	CaptureState *int32 `json:"capture_state"`
 	ObservedAt   string `json:"observed_at,omitempty"`
@@ -38,6 +39,7 @@ func decodeNativeObservation(data []byte) (NativeCameraObservation, error) {
 		CameraID     *int   `json:"camera_id"`
 		CameraAmount *int   `json:"camera_amount"`
 		Workmode     *int32 `json:"workmode"`
+		ModeProfile  *int32 `json:"mode_profile"`
 		RecordState  *int32 `json:"record_state"`
 		CaptureState *int32 `json:"capture_state"`
 		Reason       string `json:"reason"`
@@ -61,12 +63,13 @@ func decodeNativeObservation(data []byte) (NativeCameraObservation, error) {
 			return NativeCameraObservation{}, errors.New("invalid native reader status")
 		}
 	}
-	if wire.CameraID == nil || *wire.CameraID != 0 || wire.CameraAmount == nil || *wire.CameraAmount != 1 || wire.RecordState == nil || wire.CaptureState == nil || wire.Workmode == nil {
+	if wire.CameraID == nil || *wire.CameraID != 0 || wire.CameraAmount == nil || *wire.CameraAmount != 1 || wire.RecordState == nil || wire.CaptureState == nil || wire.Workmode == nil || wire.ModeProfile == nil {
 		return NativeCameraObservation{}, errors.New("incomplete native camera observation")
 	}
 	return NativeCameraObservation{
 		Status:       "ok",
 		Workmode:     wire.Workmode,
+		ModeProfile:  wire.ModeProfile,
 		RecordState:  wire.RecordState,
 		CaptureState: wire.CaptureState,
 		ObservedAt:   time.Now().UTC().Format(time.RFC3339Nano),
@@ -190,6 +193,7 @@ func addNativeCameraObservation(ctx context.Context, a *App, status *NativeCamer
 			status.ControlAvailable = true
 			status.RecordingControls = nativeRecordingControls(status.NativeState)
 			status.CaptureControls = nativeCaptureControls(status.NativeState)
+			status.ModeControls = nativeModeControls(status.NativeState)
 		}
 		return
 	}

@@ -58,6 +58,7 @@ type nativeRecordingRequest struct {
 type NativeRecordingState struct {
 	RecordState  *int32 `json:"record_state"`
 	CaptureState *int32 `json:"capture_state"`
+	ModeProfile  *int32 `json:"mode_profile,omitempty"`
 }
 
 type NativeRecordingResult struct {
@@ -79,10 +80,41 @@ func validNativeRecordingAction(action string) bool {
 	return action == "start_recording" || action == "stop_recording"
 }
 
-// capture shares the same native client, operation lock, and dedup as recording,
-// so a photo and a recording toggle can never dispatch at the same time.
+// capture and mode switch share the same native client, operation lock, and
+// dedup as recording, so no two of them can dispatch at the same time.
 func validNativeAction(action string) bool {
-	return validNativeRecordingAction(action) || action == "capture"
+	return validNativeRecordingAction(action) || action == "capture" || validNativeModeAction(action)
+}
+
+// Only the two verified profiles are exposed; unknown mode integers are never
+// offered or sent. mode_photo=5, mode_video=1.
+func validNativeModeAction(action string) bool {
+	return action == "mode_photo" || action == "mode_video"
+}
+
+func nativeModeTarget(action string) int32 {
+	if action == "mode_photo" {
+		return 5
+	}
+	return 1
+}
+
+type NativeModeControls struct {
+	Photo bool `json:"photo"`
+	Video bool `json:"video"`
+}
+
+// A mode switch dispatches only from the verified idle state. Each button is
+// offered only when idle and not already in that profile.
+func nativeModeControls(observation NativeCameraObservation) NativeModeControls {
+	recording := nativeRecording(observation)
+	idle := recording != nil && !*recording &&
+		observation.CaptureState != nil && *observation.CaptureState == 0
+	profile := observation.ModeProfile
+	return NativeModeControls{
+		Photo: idle && profile != nil && *profile != 5,
+		Video: idle && profile != nil && *profile != 1,
+	}
 }
 
 type NativeCaptureControls struct {
@@ -136,6 +168,26 @@ func decodeNativeRecording(data []byte, action string) (NativeRecordingResult, e
 			valid = !dispatched && wire.NativeCode == nil && wire.Before != nil && wire.After == nil
 		case "rejected":
 			valid = dispatched && wire.NativeCode != nil && *wire.NativeCode != 0 && wire.Before != nil
+		case "not_sent":
+			valid = !dispatched && wire.NativeCode == nil && wire.After == nil
+		case "unknown":
+			valid = dispatched && wire.After == nil
+		}
+	} else if validNativeModeAction(action) {
+		target := nativeModeTarget(action)
+		beforeProfile := wire.Before != nil && wire.Before.ModeProfile != nil
+		targetObserved := wire.After != nil && wire.After.ModeProfile != nil && *wire.After.ModeProfile == target
+		switch wire.Outcome {
+		case "confirmed":
+			valid = dispatched && accepted && beforeProfile && targetObserved
+		case "accepted":
+			valid = dispatched && accepted && beforeProfile
+		case "already":
+			valid = !dispatched && wire.NativeCode == nil && beforeProfile && *wire.Before.ModeProfile == target && targetObserved
+		case "blocked":
+			valid = !dispatched && wire.NativeCode == nil && beforeProfile && wire.After == nil
+		case "rejected":
+			valid = dispatched && wire.NativeCode != nil && *wire.NativeCode != 0 && beforeProfile
 		case "not_sent":
 			valid = !dispatched && wire.NativeCode == nil && wire.After == nil
 		case "unknown":
@@ -238,6 +290,28 @@ func nativeRecordingMessage(result NativeRecordingResult) string {
 			return "拍照请求未发送，请检查原生相机状态。"
 		default:
 			return "拍照请求结果未知，请先查看原生状态，确认后再操作。"
+		}
+	}
+	if validNativeModeAction(result.Action) {
+		mode := "拍照"
+		if result.Action == "mode_video" {
+			mode = "视频"
+		}
+		switch result.Outcome {
+		case "confirmed":
+			return "已切换到" + mode + "模式。"
+		case "already":
+			return "相机已处于" + mode + "模式，未重复切换。"
+		case "accepted":
+			return "已受理切换到" + mode + "模式，暂未确认。"
+		case "blocked":
+			return "相机当前状态不支持切换模式，请先停止录像并稍后刷新。"
+		case "rejected":
+			return fmt.Sprintf("相机返回错误（代码 %d），请查看相机提示和当前状态。", *result.NativeCode)
+		case "not_sent":
+			return "切换模式请求未发送，请检查原生相机状态。"
+		default:
+			return "切换模式结果未知，请先查看原生状态，确认后再操作。"
 		}
 	}
 	verb := "开始"
@@ -345,6 +419,10 @@ func (controller *nativeRecordingController) handleRecording(w http.ResponseWrit
 
 func (controller *nativeRecordingController) handleCapture(w http.ResponseWriter, r *http.Request) {
 	controller.serve(w, r, func(a string) bool { return a == "capture" }, "需要 action=capture 与 8–80 位 request_id")
+}
+
+func (controller *nativeRecordingController) handleMode(w http.ResponseWriter, r *http.Request) {
+	controller.serve(w, r, validNativeModeAction, "需要 action=mode_photo|mode_video 与 8–80 位 request_id")
 }
 
 func (controller *nativeRecordingController) serve(w http.ResponseWriter, r *http.Request, allowed func(string) bool, invalidMsg string) {

@@ -66,6 +66,7 @@ def bind_library():
         "camera_manager_connect_camera": [C.c_void_p, C.c_int, C.POINTER(C.c_void_p)],
         "camera_get_record_state": [C.c_void_p, C.POINTER(C.c_int)],
         "camera_get_capture_state": [C.c_void_p, C.POINTER(C.c_int)],
+        "camera_get_mode_profile": [C.c_void_p, C.POINTER(C.c_int)],
     }
     for name, args in signatures.items():
         fn = getattr(lib, name)
@@ -127,12 +128,21 @@ def read_workmode(lib, manager):
     return value.value
 
 
+def read_mode_profile(lib, device):
+    value = C.c_int(-2147483648)
+    checked("mode_profile", lib.camera_get_mode_profile, device, C.byref(value))
+    if value.value == -2147483648:
+        raise ProbeError("error", "mode_profile was not written.")
+    return value.value
+
+
 def query(lib):
     with camera_connection(lib) as (manager, device):
         return {
             "camera_id": 0,
             "camera_amount": 1,
             "workmode": read_workmode(lib, manager),
+            "mode_profile": read_mode_profile(lib, device),
             **read_state(lib, device),
         }
 
@@ -268,6 +278,62 @@ def capture():
     return result
 
 
+def mode_state(lib, device):
+    return {**read_state(lib, device), "mode_profile": read_mode_profile(lib, device)}
+
+
+def set_mode(action):
+    # Switch the native shooting mode to a mapped profile. Only the verified
+    # profiles are allowed; unknown integers are never sent to the mode setter.
+    profiles = {"mode_photo": 5, "mode_video": 1}
+    result = {
+        "schema": 1, "action": action, "outcome": "not_sent",
+        "dispatched": False, "native_code": None,
+        "before": None, "after": None, "reason": "",
+    }
+    if action not in profiles:
+        result["reason"] = "Unsupported mode action."
+        return result
+    target = profiles[action]
+    try:
+        with native_library() as lib:
+            fn = lib.camera_set_mode_profile
+            fn.argtypes, fn.restype = [C.c_void_p, C.c_int], C.c_int
+            with camera_connection(lib) as (_manager, device):
+                before = mode_state(lib, device)
+                result["before"] = before
+                if before["mode_profile"] == target:
+                    result.update(outcome="already", after=before)
+                elif before["record_state"] != 3 or before["capture_state"] != 0:
+                    result.update(outcome="blocked", reason="Native camera is not idle for a mode switch.")
+                else:
+                    # Set uncertainty BEFORE the call: a native request cannot be
+                    # undone by killing this process, and must not be retried.
+                    result.update(dispatched=True, outcome="unknown")
+                    rc = fn(device, target)
+                    result["native_code"] = rc
+                    if rc != 0:
+                        result.update(outcome="rejected", reason="camera_set_mode_profile returned %d." % rc)
+                    else:
+                        # Observe the mode settle at the target; never retry or
+                        # send a compensating switch. Native service owns it.
+                        result["outcome"] = "accepted"
+                        deadline = time.monotonic() + 2.0
+                        while True:
+                            result["after"] = mode_state(lib, device)
+                            if result["after"]["mode_profile"] == target:
+                                result["outcome"] = "confirmed"
+                                break
+                            if time.monotonic() >= deadline:
+                                break
+                            time.sleep(0.1)
+    except (ProbeError, OSError, AttributeError) as exc:
+        result["outcome"] = "unknown" if result["dispatched"] else "not_sent"
+        result["reason"] = str(exc)
+        result["after"] = None
+    return result
+
+
 def main():
     # Native logging must not be mistaken for the JSON protocol. Keep the saved
     # output descriptor private; vendor output goes to the bounded stderr pipe.
@@ -278,6 +344,8 @@ def main():
             result = observe()
         elif sys.argv[1] == "capture":
             result = capture()
+        elif sys.argv[1] in ("mode_photo", "mode_video"):
+            result = set_mode(sys.argv[1])
         else:
             result = record(sys.argv[1] if len(sys.argv) == 2 else "")
         os.write(output, (json.dumps(result, separators=(",", ":")) + "\n").encode())

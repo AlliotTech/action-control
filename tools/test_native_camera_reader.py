@@ -58,6 +58,11 @@ class FakeLibrary:
         output._obj.value = 3
         return self.call("workmode")
 
+    def camera_get_mode_profile(self, camera, output):
+        assert camera.value == 202
+        output._obj.value = 5
+        return self.call("mode_profile")
+
     def camera_manager_destroy(self, manager):
         assert manager.value == 101
         return self.call("destroy")
@@ -67,11 +72,11 @@ class ReaderTests(unittest.TestCase):
     def test_opaque_handles_and_null_callbacks(self):
         lib = FakeLibrary()
         self.assertEqual(reader.query(lib), {
-            "camera_id": 0, "camera_amount": 1, "workmode": 3, "record_state": 3, "capture_state": 0,
+            "camera_id": 0, "camera_amount": 1, "workmode": 3, "mode_profile": 5, "record_state": 3, "capture_state": 0,
         })
         self.assertTrue(lib.assert_null_params)
         self.assertEqual(C.sizeof(reader.CreateParams), 16)
-        self.assertEqual(lib.calls, ["create", "amount", "connect", "workmode", "record_state", "capture_state", "destroy"])
+        self.assertEqual(lib.calls, ["create", "amount", "connect", "workmode", "mode_profile", "record_state", "capture_state", "destroy"])
 
     def test_failure_never_uses_missing_handles_and_always_releases_manager(self):
         for failure in ("create", "amount", "connect", "record_state", "capture_state", "destroy"):
@@ -359,6 +364,97 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "not_sent")
         load.assert_not_called()
 
+
+
+class ModeLibrary(FakeLibrary):
+    def __init__(self, states, code=0, fail=None, fail_after=None):
+        super().__init__(fail=fail)
+        self.states = iter(states)
+        self.current = (3, 0, 1)
+        self.sent = False
+        self.code, self.fail_after = code, fail_after
+        self.camera_set_mode_profile = Mock(side_effect=lambda camera, target: self.dispatch(camera, target))
+
+    def dispatch(self, camera, target):
+        assert camera.value == 202
+        self.calls.append("set_mode")
+        self.sent = True
+        if self.fail_after == "dispatch":
+            raise OSError("native connection failed during dispatch")
+        return self.code
+
+    def camera_get_record_state(self, camera, output):
+        assert camera.value == 202
+        self.current = next(self.states, self.current)
+        output._obj.value = self.current[0]
+        return self.call("record_state")
+
+    def camera_get_capture_state(self, camera, output):
+        assert camera.value == 202
+        output._obj.value = self.current[1]
+        rc = self.call("capture_state")
+        return -1001 if self.sent and self.fail_after == "read" else rc
+
+    def camera_get_mode_profile(self, camera, output):
+        assert camera.value == 202
+        output._obj.value = self.current[2]
+        return self.call("mode_profile")
+
+
+class ModeTests(unittest.TestCase):
+    def run_mode(self, lib, action):
+        with patch.object(reader, "check_environment"), patch.object(reader, "bind_library", return_value=lib), patch.object(reader.socket, "socket"), patch.object(reader.time, "sleep"):
+            return reader.set_mode(action)
+
+    def test_switch_confirms_target_profile(self):
+        for action, states, target in (
+            ("mode_photo", [(3, 0, 1), (3, 0, 5)], 5),
+            ("mode_video", [(3, 0, 5), (3, 0, 1)], 1),
+        ):
+            lib = ModeLibrary(states)
+            result = self.run_mode(lib, action)
+            self.assertEqual(result["outcome"], "confirmed")
+            self.assertEqual(result["native_code"], 0)
+            self.assertEqual(result["after"]["mode_profile"], target)
+            lib.camera_set_mode_profile.assert_called_once()
+            self.assertEqual(lib.calls[-1], "destroy")
+
+    def test_already_in_target_does_not_dispatch(self):
+        lib = ModeLibrary([(3, 0, 5)])
+        result = self.run_mode(lib, "mode_photo")
+        self.assertEqual(result["outcome"], "already")
+        self.assertFalse(result["dispatched"])
+        lib.camera_set_mode_profile.assert_not_called()
+
+    def test_non_idle_blocks_switch(self):
+        for state in [(1, 0, 1), (3, 1, 1)]:
+            lib = ModeLibrary([state])
+            result = self.run_mode(lib, "mode_photo")
+            self.assertEqual(result["outcome"], "blocked")
+            self.assertFalse(result["dispatched"])
+            lib.camera_set_mode_profile.assert_not_called()
+
+    def test_native_rejection_keeps_code(self):
+        lib = ModeLibrary([(3, 0, 1)], code=-1021)
+        result = self.run_mode(lib, "mode_photo")
+        self.assertEqual(result["outcome"], "rejected")
+        self.assertEqual(result["native_code"], -1021)
+        lib.camera_set_mode_profile.assert_called_once()
+
+    def test_uncertain_paths_never_claim_success(self):
+        for fail, fail_after in ((None, "dispatch"), (None, "read"), ("destroy", None)):
+            lib = ModeLibrary([(3, 0, 1), (3, 0, 5)], fail=fail, fail_after=fail_after)
+            result = self.run_mode(lib, "mode_photo")
+            self.assertEqual(result["outcome"], "unknown")
+            self.assertTrue(result["dispatched"])
+            self.assertIsNone(result["after"])
+            lib.camera_set_mode_profile.assert_called_once()
+
+    def test_invalid_mode_action_never_loads(self):
+        with patch.object(reader, "check_environment") as check, patch.object(reader, "bind_library") as load:
+            self.assertEqual(reader.set_mode("mode_timelapse")["outcome"], "not_sent")
+            check.assert_not_called()
+            load.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

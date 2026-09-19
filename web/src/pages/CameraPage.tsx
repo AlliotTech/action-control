@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type Mpegts from "mpegts.js";
 import {
+  Aperture,
   Camera,
   Copy,
   Download,
@@ -9,6 +10,7 @@ import {
   RefreshCw,
   RotateCcw,
   Square,
+  Video,
 } from "lucide-react";
 import {
   apiURL,
@@ -115,7 +117,12 @@ export function CameraPage() {
         crypto.getRandomValues(new Uint8Array(16)),
         (byte) => byte.toString(16).padStart(2, "0"),
       ).join("");
-      const endpoint = action === "capture" ? "native_capture" : "native_recording";
+      const endpoint =
+        action === "capture"
+          ? "native_capture"
+          : action === "mode_photo" || action === "mode_video"
+            ? "native_mode"
+            : "native_recording";
       setNativeResult(
         await post<NativeRecordingResult>(endpoint, {
           action,
@@ -206,6 +213,15 @@ export function CameraPage() {
                 </dd>
               </div>
               <div>
+                <dt className="text-muted-foreground">拍摄模式档</dt>
+                <dd className="mt-1">
+                  {native.data.native_state.status === "ok" &&
+                  native.data.native_state.mode_profile !== null
+                    ? `代码 ${native.data.native_state.mode_profile}`
+                    : "—"}
+                </dd>
+              </div>
+              <div>
                 <dt className="text-muted-foreground">网页预览</dt>
                 <dd className="mt-1">下方连接 Mimo 画面</dd>
               </div>
@@ -254,6 +270,30 @@ export function CameraPage() {
               >
                 <Camera />
                 {nativeAction === "capture" ? "正在请求拍照…" : "拍照"}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={
+                  nativeAction !== null ||
+                  !native.data.control_available ||
+                  !native.data.mode_controls.photo
+                }
+                onClick={() => void runNative("mode_photo")}
+              >
+                <Aperture />
+                {nativeAction === "mode_photo" ? "正在切换…" : "切到拍照"}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={
+                  nativeAction !== null ||
+                  !native.data.control_available ||
+                  !native.data.mode_controls.video
+                }
+                onClick={() => void runNative("mode_video")}
+              >
+                <Video />
+                {nativeAction === "mode_video" ? "正在切换…" : "切到视频"}
               </Button>
             </div>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">

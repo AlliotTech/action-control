@@ -41,6 +41,7 @@ type NativeCameraStatus struct {
 	ControlAvailable  bool                    `json:"control_available"`
 	RecordingControls NativeRecordingControls `json:"recording_controls"`
 	CaptureControls   NativeCaptureControls   `json:"capture_controls"`
+	ModeControls      NativeModeControls      `json:"mode_controls"`
 	PreviewAvailable  bool                    `json:"preview_available"`
 	Services          []NativeCameraService   `json:"services"`
 	ObservedAt        string                  `json:"observed_at"`

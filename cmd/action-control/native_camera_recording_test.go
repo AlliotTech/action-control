@@ -288,3 +288,73 @@ func TestNativeCaptureEndpointRejectsRecordingActions(t *testing.T) {
 		t.Fatalf("local mode advertised capture control: %+v %v", status, err)
 	}
 }
+
+func TestNativeModeDecodeValidatesProfileTransitions(t *testing.T) {
+	for _, data := range []string{
+		// confirmed needs the target profile observed in after
+		`{"schema":1,"action":"mode_photo","outcome":"confirmed","dispatched":true,"native_code":0,"before":{"record_state":3,"capture_state":0,"mode_profile":1},"after":{"record_state":3,"capture_state":0,"mode_profile":1}}`,
+		// already needs before already at target
+		`{"schema":1,"action":"mode_photo","outcome":"already","dispatched":false,"before":{"record_state":3,"capture_state":0,"mode_profile":1},"after":{"record_state":3,"capture_state":0,"mode_profile":1}}`,
+		// missing mode_profile in state
+		`{"schema":1,"action":"mode_photo","outcome":"confirmed","dispatched":true,"native_code":0,"before":{"record_state":3,"capture_state":0},"after":{"record_state":3,"capture_state":0,"mode_profile":5}}`,
+	} {
+		if result, err := decodeNativeRecording([]byte(data), "mode_photo"); err == nil {
+			t.Fatalf("unproven mode result accepted: %s -> %+v", data, result)
+		}
+	}
+	for _, data := range []string{
+		`{"schema":1,"action":"mode_photo","outcome":"confirmed","dispatched":true,"native_code":0,"before":{"record_state":3,"capture_state":0,"mode_profile":1},"after":{"record_state":3,"capture_state":0,"mode_profile":5}}`,
+		`{"schema":1,"action":"mode_photo","outcome":"already","dispatched":false,"before":{"record_state":3,"capture_state":0,"mode_profile":5},"after":{"record_state":3,"capture_state":0,"mode_profile":5}}`,
+		`{"schema":1,"action":"mode_video","outcome":"blocked","dispatched":false,"before":{"record_state":1,"capture_state":0,"mode_profile":5}}`,
+		`{"schema":1,"action":"mode_video","outcome":"rejected","dispatched":true,"native_code":-1010,"before":{"record_state":3,"capture_state":0,"mode_profile":5}}`,
+		`{"schema":1,"action":"mode_photo","outcome":"unknown","dispatched":true,"native_code":0,"before":{"record_state":3,"capture_state":0,"mode_profile":1}}`,
+	} {
+		action := "mode_photo"
+		if strings.Contains(data, "mode_video") {
+			action = "mode_video"
+		}
+		result, err := decodeNativeRecording([]byte(data), action)
+		if err != nil || nativeRecordingMessage(result) == "" {
+			t.Fatalf("valid mode result lost: %s -> %+v %v", data, result, err)
+		}
+	}
+}
+
+func TestNativeModeControlsOfferOnlyTheOtherModeWhenIdle(t *testing.T) {
+	state := func(record, capture, profile int32) NativeCameraObservation {
+		return NativeCameraObservation{Status: "ok", RecordState: &record, CaptureState: &capture, ModeProfile: &profile}
+	}
+	if c := nativeModeControls(state(3, 0, 5)); !c.Video || c.Photo {
+		t.Fatalf("photo mode should offer only video: %+v", c)
+	}
+	if c := nativeModeControls(state(3, 0, 1)); !c.Photo || c.Video {
+		t.Fatalf("video mode should offer only photo: %+v", c)
+	}
+	for _, o := range []NativeCameraObservation{state(1, 0, 5), state(3, 1, 1), {Status: "ok"}} {
+		if c := nativeModeControls(o); c.Photo || c.Video {
+			t.Fatalf("mode switch offered from a non-idle state: %+v", c)
+		}
+	}
+}
+
+func TestNativeModeEndpointRejectsOtherActions(t *testing.T) {
+	a, handler := testApplication(t)
+	for _, data := range []string{
+		`{}`, `{"action":"mode_photo"}`, `{"action":"capture","request_id":"request-1"}`,
+		`{"action":"start_recording","request_id":"request-1"}`, `{"action":"mode_timelapse","request_id":"request-1"}`,
+	} {
+		response := requestTest(a, handler, "POST", "/api/native_mode", strings.NewReader(data), nil)
+		if response.Code != 400 {
+			t.Fatalf("bad mode request passed validation: %s %d", data, response.Code)
+		}
+	}
+	response := requestTest(a, handler, "POST", "/api/native_mode", strings.NewReader(`{"action":"mode_photo","request_id":"mode-req-1"}`), nil)
+	if response.Code != 503 || !strings.Contains(response.Body.String(), "device_unavailable") {
+		t.Fatal("local mode passed the mode hardware guard: ", response.Body.String())
+	}
+	response = requestTest(a, handler, "GET", "/api/native_camera_status", nil, nil)
+	var status NativeCameraStatus
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil || status.ModeControls.Photo || status.ModeControls.Video {
+		t.Fatalf("local mode advertised mode controls: %+v %v", status, err)
+	}
+}

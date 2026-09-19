@@ -15,7 +15,7 @@ import (
 func TestNativeRecordingUsesOnlyVerifiedCodes(t *testing.T) {
 	for _, code := range []int{-1, 0, 1, 2, 3, 4, 5, 100} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
-			observation, err := decodeNativeObservation([]byte(fmt.Sprintf(`{"schema":1,"status":"ok","camera_id":0,"camera_amount":1,"workmode":3,"record_state":%d,"capture_state":0}`, code)))
+			observation, err := decodeNativeObservation([]byte(fmt.Sprintf(`{"schema":1,"status":"ok","camera_id":0,"camera_amount":1,"workmode":3,"mode_profile":5,"record_state":%d,"capture_state":0}`, code)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -35,7 +35,7 @@ func TestNativeRecordingUsesOnlyVerifiedCodes(t *testing.T) {
 }
 
 func TestNativeReaderRejectsIncompleteOrContaminatedOutput(t *testing.T) {
-	good := `{"schema":1,"status":"ok","camera_id":0,"camera_amount":1,"workmode":3,"record_state":1,"capture_state":0}`
+	good := `{"schema":1,"status":"ok","camera_id":0,"camera_amount":1,"workmode":3,"mode_profile":5,"record_state":1,"capture_state":0}`
 	for _, data := range []string{
 		`{}`, `null`, `{"schema":1,"status":"ok"}`,
 		strings.Replace(good, `"schema":1`, `"schema":2`, 1),
@@ -45,6 +45,7 @@ func TestNativeReaderRejectsIncompleteOrContaminatedOutput(t *testing.T) {
 		strings.Replace(good, `"record_state":1`, `"record_state":true`, 1),
 		strings.Replace(good, `"record_state":1`, `"record_state":2147483648`, 1),
 		strings.Replace(good, `"workmode":3`, `"workmode":null`, 1),
+		strings.Replace(good, `"mode_profile":5`, `"mode_profile":null`, 1),
 		strings.Replace(good, `"status":"ok"`, `"status":"invented"`, 1),
 		good + "\n{}", "native log\n" + good, good + "\nunfinished log",
 	} {
@@ -146,7 +147,7 @@ func TestNativeReaderKillsHungChildAndDiscardsPartialOutput(t *testing.T) {
 	}
 	// No native calls: a fake child returns plausible JSON and then hangs. A
 	// timeout must invalidate its output and terminate the owned process group.
-	script := "#!/bin/sh\nprintf '%s\\n' '{\"schema\":1,\"status\":\"ok\",\"camera_id\":0,\"camera_amount\":1,\"workmode\":3,\"record_state\":1,\"capture_state\":0}'\nexec /bin/sleep 30\n"
+	script := "#!/bin/sh\nprintf '%s\\n' '{\"schema\":1,\"status\":\"ok\",\"camera_id\":0,\"camera_amount\":1,\"workmode\":3,\"mode_profile\":5,\"record_state\":1,\"capture_state\":0}'\nexec /bin/sleep 30\n"
 	if err := os.WriteFile(filepath.Join(bin, "python3"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
