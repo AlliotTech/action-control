@@ -438,6 +438,12 @@ func (s *fileStore) change(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/delete" {
 		if err = s.removeMediaIndexPath(r.Context(), data.Path, indexedDir); err != nil {
+			// The file is already deleted. A locked index is recoverable via the
+			// stale-index cleanup, so report it as a warning, not a failure.
+			if errors.Is(err, errMediaIndexLocked) {
+				jsonResponse(w, 200, map[string]any{"ok": true, "warning": err.Error()})
+				return
+			}
 			jsonError(w, 500, "media_index_sync", err)
 			return
 		}

@@ -238,21 +238,34 @@ export function AlbumPage() {
   async function remove(files: MediaItem[]) {
     setBusy(true);
     setError("");
+    const warnings: string[] = [];
     try {
       for (const item of files) {
+        let result: { ok: boolean; warning?: string };
         try {
-          await post("delete", { path: item.path }, "DELETE");
+          result = await post<{ ok: boolean; warning?: string }>(
+            "delete",
+            { path: item.path },
+            "DELETE",
+          );
         } catch (cause) {
           throw new Error(
             `「${item.name}」删除失败：${errorText(cause)}；已删除文件不会恢复，其余文件保持选中。`,
           );
         }
+        // File is deleted even when the index sync is deferred; deselect it.
+        if (result.warning) warnings.push(`「${item.name}」：${result.warning}`);
         setSelected((previous) => {
           const next = new Map(previous);
           next.delete(item.path);
           return next;
         });
         if (preview === item.path) setPreview(null);
+      }
+      if (warnings.length) {
+        setError(
+          `文件已删除。相机原生服务占用媒体索引，可稍后在系统页“清理失效索引”同步：${warnings.join("；")}`,
+        );
       }
     } finally {
       setBusy(false);

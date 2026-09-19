@@ -247,11 +247,27 @@ func (s *fileStore) removeMediaIndexPath(ctx context.Context, virtual string, di
 	if !ready {
 		return errors.New("文件已删除，但设备缺少 sqlite3，AC004.db 未同步")
 	}
-	_, err = s.runSQLite(ctx, location, false, ".timeout 5000\nBEGIN IMMEDIATE; DELETE FROM gis_info_table WHERE "+mediaIndexPredicate(name, directory)+"; COMMIT;\n")
-	if err != nil {
-		return fmt.Errorf("文件已删除，但 AC004.db 未同步: %w", err)
+	// dji_media_server may briefly hold the write lock. Retry with backoff; the
+	// file is already gone, so a persistent lock is not a delete failure — the
+	// stale row self-heals via the "clean stale index" tool. Surface it as
+	// errMediaIndexLocked so the caller can report a soft warning, not an error.
+	for attempt := 0; ; attempt++ {
+		_, err = s.runSQLite(ctx, location, false, ".timeout 3000\nBEGIN IMMEDIATE; DELETE FROM gis_info_table WHERE "+mediaIndexPredicate(name, directory)+"; COMMIT;\n")
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, errMediaIndexLocked) {
+			return fmt.Errorf("文件已删除，但 AC004.db 未同步: %w", err)
+		}
+		if attempt >= 2 || ctx.Err() != nil {
+			return fmt.Errorf("%w: 文件已删除，AC004.db 稍后可在“清理失效索引”同步", errMediaIndexLocked)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w: 文件已删除，AC004.db 稍后可在“清理失效索引”同步", errMediaIndexLocked)
+		case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+		}
 	}
-	return nil
 }
 
 func (s *fileStore) cleanMediaIndex(ctx context.Context, storage string) (MediaIndexCleanup, error) {
@@ -306,4 +322,80 @@ func mediaIndexErrorCode(err error) (int, string, error) {
 		return 409, "media_index_locked", errors.New("数据库被相机原生服务占用；请先在系统页停止原生相机服务，再执行清理；完成后需要重启相机恢复原生功能")
 	}
 	return 500, "media_index_cleanup", err
+}
+
+// NativeMediaMeta is read-only camera metadata from AC004.db that a filesystem
+// scan or ffprobe cannot know (rating, stabilization, capture params). All
+// values are reported as stored; no enum is guessed. video_info_table holds
+// real width/height/fps, so no lookup table is needed here.
+type NativeMediaMeta struct {
+	Source     string   `json:"source"`
+	Indexed    bool     `json:"indexed"`
+	Rating     *int     `json:"rating,omitempty"`
+	Highlight  *bool    `json:"highlight,omitempty"`
+	DurationMS *int64   `json:"duration_ms,omitempty"`
+	Width      *int     `json:"width,omitempty"`
+	Height     *int     `json:"height,omitempty"`
+	FPS        *float64 `json:"fps,omitempty"`
+	EncodeRaw  *int     `json:"encode_format_raw,omitempty"`
+	SteadyRaw  *int     `json:"steady_mode_raw,omitempty"`
+	NDValue    *int     `json:"nd_value,omitempty"`
+	EVBias     *int     `json:"ev_bias,omitempty"`
+}
+
+func (s *fileStore) nativeMediaMeta(ctx context.Context, virtual string) (*NativeMediaMeta, error) {
+	location, name, ok := mediaIndexForPath(virtual)
+	if !ok {
+		return nil, nil
+	}
+	if _, ready, err := s.mediaIndexReady(location); err != nil || !ready {
+		return nil, err
+	}
+	out, err := s.runSQLite(ctx, location, true, "PRAGMA query_only=ON; SELECT g.star, g.highlight, "+
+		"v.duration, v.resolution_width, v.resolution_height, v.frame_num, v.frame_den, "+
+		"v.encode_format, v.steady_mode, v.nd_value, v.ev_bias "+
+		"FROM gis_info_table g LEFT JOIN video_info_table v ON g.video_index = v.ID "+
+		"WHERE g.file_name = "+sqliteLiteral(name)+" LIMIT 1;\n")
+	if err != nil {
+		return nil, err
+	}
+	return parseNativeMediaMeta(out)
+}
+
+// parseNativeMediaMeta maps one AC004.db JSON row to NativeMediaMeta. Pure (no
+// sqlite3) so the fps division and highlight flag mapping are unit-testable.
+func parseNativeMediaMeta(out []byte) (*NativeMediaMeta, error) {
+	var rows []struct {
+		Star      *int   `json:"star"`
+		Highlight *int   `json:"highlight"`
+		Duration  *int64 `json:"duration"`
+		Width     *int   `json:"resolution_width"`
+		Height    *int   `json:"resolution_height"`
+		FrameNum  *int64 `json:"frame_num"`
+		FrameDen  *int64 `json:"frame_den"`
+		Encode    *int   `json:"encode_format"`
+		Steady    *int   `json:"steady_mode"`
+		ND        *int   `json:"nd_value"`
+		EV        *int   `json:"ev_bias"`
+	}
+	if len(strings.TrimSpace(string(out))) == 0 {
+		return &NativeMediaMeta{Source: "native_index", Indexed: false}, nil
+	}
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return &NativeMediaMeta{Source: "native_index", Indexed: false}, nil
+	}
+	r := rows[0]
+	meta := &NativeMediaMeta{Source: "native_index", Indexed: true, Rating: r.Star, DurationMS: r.Duration, Width: r.Width, Height: r.Height, EncodeRaw: r.Encode, SteadyRaw: r.Steady, NDValue: r.ND, EVBias: r.EV}
+	if r.Highlight != nil {
+		h := *r.Highlight != 0
+		meta.Highlight = &h
+	}
+	if r.FrameNum != nil && r.FrameDen != nil && *r.FrameDen > 0 {
+		fps := float64(*r.FrameNum) / float64(*r.FrameDen)
+		meta.FPS = &fps
+	}
+	return meta, nil
 }

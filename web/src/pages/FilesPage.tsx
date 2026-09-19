@@ -446,8 +446,15 @@ export function FilesPage() {
                 setBusy(true);
                 setDeleteError("");
                 try {
-                  await post("delete", { path: removeItem.path }, "DELETE");
+                  const result = await post<{ ok: boolean; warning?: string }>(
+                    "delete",
+                    { path: removeItem.path },
+                    "DELETE",
+                  );
                   setRemoveItem(null);
+                  if (result.warning) {
+                    setMessage(`文件已删除。${result.warning}`);
+                  }
                   await refresh();
                 } catch (error) {
                   setDeleteError(errorText(error));

@@ -81,8 +81,13 @@ func (s *fileStore) mediaInfo(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 400, "not_file", errors.New("expected a media file"))
 		return
 	}
+	native, _ := s.nativeMediaMeta(r.Context(), name)
 	if cfg, format, e := image.DecodeConfig(io.LimitReader(f, 2<<20)); e == nil {
-		jsonResponse(w, 200, map[string]any{"width": cfg.Width, "height": cfg.Height, "codec": strings.ToUpper(format), "size": st.Size()})
+		result := map[string]any{"width": cfg.Width, "height": cfg.Height, "codec": strings.ToUpper(format), "size": st.Size()}
+		if native != nil {
+			result["native"] = native
+		}
+		jsonResponse(w, 200, result)
 		return
 	}
 	if _, err = f.Seek(0, io.SeekStart); err != nil {
@@ -140,6 +145,9 @@ func (s *fileStore) mediaInfo(w http.ResponseWriter, r *http.Request) {
 		}
 		if v, e := strconv.ParseInt(bitrate, 10, 64); e == nil {
 			result["bitrate_bps"] = v
+		}
+		if native != nil {
+			result["native"] = native
 		}
 		jsonResponse(w, 200, result)
 		return
