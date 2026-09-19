@@ -232,6 +232,21 @@ export interface WiFiStatus {
     recovery_ssid?: string;
   };
 }
+export interface NativeHotspotWlan {
+  operstate?: string;
+  role?: string;
+  ssid?: string;
+}
+export interface NativeHotspotResult {
+  status: "ok" | "unavailable" | "unsupported_firmware" | "error";
+  action: "start" | "stop";
+  native_code?: number;
+  pid?: number;
+  before?: NativeHotspotWlan;
+  after?: NativeHotspotWlan;
+  observed_at?: string;
+  reason?: string;
+}
 export interface WiFiNetwork {
   ssid: string;
   bssid: string;

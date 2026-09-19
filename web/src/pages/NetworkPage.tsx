@@ -18,6 +18,7 @@ import type {
   KnownNetwork,
   WiFiNetwork,
   WiFiStatus,
+  NativeHotspotResult,
 } from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -114,6 +115,7 @@ export function NetworkPage() {
   const [band, setBand] = useState("2.4G");
   const [channel, setChannel] = useState("6");
   const [apLoaded, setAPLoaded] = useState(false);
+  const [nativeHotspotBusy, setNativeHotspotBusy] = useState(false);
   const [hiddenSuccess, setHiddenSuccess] = useState("");
   const previousMode = useRef<string | undefined>(undefined);
 
@@ -305,6 +307,27 @@ export function NetworkPage() {
     }
   }
 
+  async function nativeHotspotAction(action: "start" | "stop") {
+    setNativeHotspotBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await post<NativeHotspotResult>("native_hotspot", { action });
+      if (result.status !== "ok" || result.native_code !== 0) {
+        throw new Error(result.reason || `原生热点操作失败（${result.native_code ?? "未知"}）`);
+      }
+      setMessage(action === "start"
+        ? "原生热点已开启。连接相机热点后访问 http://192.168.2.1:8080。"
+        : "原生热点已关闭。无线已交还相机原生关闭状态。" );
+      await refresh();
+    } catch (cause) {
+      setError(`原生热点操作失败：${errorText(cause)}`);
+    } finally {
+      setNativeHotspotBusy(false);
+    }
+  }
+ 
+
   const mode = status.data?.mode;
   const role = status.data?.role ?? mode;
   const primaryState = !status.data
@@ -451,12 +474,13 @@ export function NetworkPage() {
           <div className="flex min-w-0 items-center gap-3">
             <Wifi className="size-7 shrink-0 text-primary" />
             <div className="min-w-0">
-              <p className="text-lg font-semibold">{primaryState}</p>
-              {(status.data?.owner === "native" || mode === "native") && (
-                <Badge className="mt-1" variant="secondary">
-                  DJI 原生管理
-                </Badge>
-              )}
+
+            <p className="text-lg font-semibold">{primaryState}</p>
+            {(status.data?.owner === "native" || mode === "native") && (
+              <Badge className="mt-1" variant="secondary">
+                DJI 原生管理
+              </Badge>
+            )}
               <p className="break-all text-sm text-muted-foreground">
                 {status.data?.ssid || "未连接网络"}
               </p>
@@ -513,6 +537,35 @@ export function NetworkPage() {
           </dl>
         </details>
       </Card>
+
+      {!managed && hardware && (
+        <Card className="mb-5" title="原生热点">
+          <p className="text-sm text-muted-foreground">
+            由相机原生网络服务管理，不接管 wlan0。开启后手机连接相机热点，访问
+            <code className="mx-1 rounded bg-muted px-1">http://192.168.2.1:{httpPort}</code>。
+            当前 HTTP 接口没有登录认证或加密。
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <ConfirmButton
+              title="开启原生热点？"
+              description="相机会启动自己的 Wi-Fi 热点和 DHCP。当前页面可能因网络切换短暂中断；不要在不可信网络暴露未认证的控制台。"
+              disabled={nativeHotspotBusy || status.data?.role === "hotspot"}
+              onConfirm={() => void nativeHotspotAction("start")}
+            >
+              <Wifi /> 开启原生热点
+            </ConfirmButton>
+            <ConfirmButton
+              variant="outline"
+              title="关闭原生热点？"
+              description="相机会关闭原生 Wi-Fi 热点。手机将断开连接；如需恢复访问，请使用 USB ADB 或重新开启热点。"
+              disabled={nativeHotspotBusy || status.data?.role !== "hotspot"}
+              onConfirm={() => void nativeHotspotAction("stop")}
+            >
+              <WifiOff /> 关闭原生热点
+            </ConfirmButton>
+          </div>
+        </Card>
+      )}
 
       <details className="mb-5 rounded-xl border bg-card px-6 py-5 shadow-sm">
         <summary className="cursor-pointer font-semibold">高级网络管理</summary>
