@@ -267,6 +267,27 @@ static void make_button(AcRect rect,const char *text,void (*slot)(void *,void *)
     ew.add(panel,item,0);
 }
 
+/* Paint a QR matrix as rectangles: one white backdrop plus a black rect per
+   horizontal run of dark modules. Run-merging keeps the object count (and the
+   EW layout cost) far below one-rect-per-module. mp = pixels per module. */
+static void draw_qr(void *parent,int ox,int oy,int mp,const unsigned char *cells,int size) {
+    void *bg=ew.new_object(ew.rectangle_class,NULL);
+    ew.bounds(bg,(AcRect){ox,oy,ox+size*mp,oy+size*mp});
+    ew.rectangle_color(bg,0xffffffff);
+    ew.add(parent,bg,0);
+    for(int y=0;y<size;y++) {
+        for(int x=0;x<size;) {
+            if(!cells[y*AC_QR_MAX+x]) {x++;continue;}
+            int x0=x;
+            while(x<size && cells[y*AC_QR_MAX+x])x++;
+            void *cell=ew.new_object(ew.rectangle_class,NULL);
+            ew.bounds(cell,(AcRect){ox+x0*mp,oy+y*mp,ox+x*mp,oy+(y+1)*mp});
+            ew.rectangle_color(cell,0xff000000);
+            ew.add(parent,cell,0);
+        }
+    }
+}
+
 static void show_panel(void) {
     if(panel)return;
     void *parent=settings?settings:find(ew.liveview_class);
@@ -286,11 +307,18 @@ static void show_panel(void) {
     AcPoint corners[]={{0,0},{width,0},{width,height},{0,height}};
     for(int i=0;i<4;i++)ew.touch_point[i](blocker,corners[i]);
     ew.add(panel,blocker,0);
-    make_text(panel,(AcRect){16,16,width-16,66},"Action Control",0xffffffff);
-    counter_text=make_text(panel,(AcRect){16,72,width-16,122},"原生菜单已连接",0xffb8b8b8);
-    /* Native labeled rows compute their own ~96 px height during layout. */
-    make_button((AcRect){16,height/2-24,width-16,height/2+72},"开启/关闭热点",hotspot_slot);
-    make_button((AcRect){16,height-112,width-16,height-16},"返回",close_slot);
+    /* Two QRs across the top (7 px/module fits both in 712 px); controls below.
+       Left: Wi-Fi join (function 2A). Right: console URL (function 3). */
+    int mp=7,wy=28,wx=16,ready=atomic_load(&ac_qr_ready);
+    int wifiw=(ready?ac_qr_wifi_size:41)*mp,urlw=(ready?ac_qr_url_size:33)*mp;
+    int ux=wx+wifiw+16;
+    make_text(panel,(AcRect){wx,4,ux-16,26},"扫码连 WiFi",0xffffffff);
+    make_text(panel,(AcRect){ux,4,ux+urlw,26},"扫码开控制台",0xffffffff);
+    counter_text=make_text(panel,(AcRect){ux+urlw+16,wy,width-16,wy+60},"",0xffb8b8b8);
+    if(ready && ac_qr_wifi_size>0)draw_qr(panel,wx,wy,mp,ac_qr_wifi,ac_qr_wifi_size);
+    if(ready && ac_qr_url_size>0)draw_qr(panel,ux,wy,mp,ac_qr_url,ac_qr_url_size);
+    make_button((AcRect){16,height-80,width/2-8,height-16},"开启/关闭热点",hotspot_slot);
+    make_button((AcRect){width/2+8,height-80,width-16,height-16},"返回",close_slot);
     ew.add(parent,panel,0);
     atomic_store(&ac_status.panel_visible,1);
 }

@@ -586,6 +586,7 @@ func RegisterNetwork(mux *http.ServeMux, a *App) (func() error, error) {
 	})
 	hotspot := &nativeHotspotController{app: a}
 	mux.HandleFunc("POST /api/native_hotspot", hotspot.handle)
+	mux.HandleFunc("GET /api/hotspot_qr", hotspotQRHandler(a))
 	mux.HandleFunc("GET /api/wifi_scan", func(w http.ResponseWriter, r *http.Request) {
 		if err := requireManagedNetwork(a); err != nil {
 			networkJSONError(w, 409, "network_control", err)

@@ -1,5 +1,6 @@
 # Build outputs and caches
 /.build-tools/
+/tools/__pycache__/
 /release/
 /media/bin/
 /media/sources/

@@ -21,6 +21,10 @@
 #endif
 
 AcStatus ac_status;
+unsigned char ac_qr_wifi[AC_QR_MAX*AC_QR_MAX];
+unsigned char ac_qr_url[AC_QR_MAX*AC_QR_MAX];
+int ac_qr_wifi_size,ac_qr_url_size;
+_Atomic int ac_qr_ready;
 static pthread_once_t real_once=PTHREAD_ONCE_INIT, attach_once=PTHREAD_ONCE_INIT;
 static int (*real_create)(const char *,void **);
 static void *real_library,*ew_context;
@@ -82,6 +86,59 @@ static int post_hotspot(const char *action) {
     return got>12 && memcmp(resp,"HTTP/1.",7)==0 && memcmp(resp+9,"200",3)==0;
 }
 
+/* One-shot HTTP GET to the backend; fills buf with the whole response and
+   returns byte count on HTTP 200, else 0. Worker thread only. */
+static int http_get(const char *path,char *buf,int cap) {
+    int s=socket(AF_INET,SOCK_STREAM,0);
+    if(s<0)return 0;
+    struct timeval tv={.tv_sec=12};
+    setsockopt(s,SOL_SOCKET,SO_SNDTIMEO,&tv,sizeof(tv));
+    setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
+    struct sockaddr_in addr={.sin_family=AF_INET,.sin_port=htons(8080)};
+    addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    if(connect(s,(struct sockaddr *)&addr,sizeof(addr))<0){close(s);return 0;}
+    char req[256];int rlen=snprintf(req,sizeof(req),
+        "GET %s HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",path);
+    if(write(s,req,(size_t)rlen)!=rlen){close(s);return 0;}
+    int total=0,got;
+    while(total<cap-1 && (got=(int)read(s,buf+total,(size_t)(cap-1-total)))>0)total+=got;
+    close(s);
+    buf[total]=0;
+    if(total<12 || memcmp(buf,"HTTP/1.",7) || memcmp(buf+9,"200",3))return 0;
+    return total;
+}
+
+/* Extract the "matrix":["01..",..] rows into cells (stride AC_QR_MAX). Returns
+   the square module count, or 0 if the payload is malformed or oversized. */
+static int parse_qr(const char *body,unsigned char *cells) {
+    const char *p=strstr(body,"\"matrix\":");
+    if(!p)return 0;
+    p+=9;
+    int size=-1,y=0;
+    while((p=strchr(p,'"'))!=NULL) {
+        p++;
+        const char *end=strchr(p,'"');
+        if(!end)break;
+        int len=(int)(end-p);
+        if(size<0)size=len;
+        if(len!=size || size<=0 || size>AC_QR_MAX || y>=AC_QR_MAX)return 0;
+        for(int x=0;x<len;x++)cells[y*AC_QR_MAX+x]=(unsigned char)(p[x]=='1');
+        y++;
+        const char *q=end+1;
+        while(*q==' '||*q==',')q++;
+        p=end+1;
+        if(*q==']')break;
+    }
+    return size>0 && y==size ? size : 0;
+}
+
+static int fetch_qr(const char *path,unsigned char *cells) {
+    char buf[8192];
+    if(!http_get(path,buf,sizeof(buf)))return 0;
+    const char *body=strstr(buf,"\r\n\r\n");
+    return parse_qr(body?body+4:buf,cells);
+}
+
 static void *report_worker(void *unused) {
     (void)unused;
     char target[320],temporary[320],control[320];
@@ -136,6 +193,16 @@ static void *report_worker(void *unused) {
             atomic_store(&ac_status.hotspot_busy,0);
         }
         atomic_store(&ac_status.hotspot_on,read_wlan0_on());
+        /* Fetch both QR matrices once the backend answers; retry each 500ms
+           tick until both land, then publish for the GUI thread to draw. */
+        if(!atomic_load(&ac_qr_ready)) {
+            int w=fetch_qr("/api/hotspot_qr?kind=wifi",ac_qr_wifi);
+            int u=fetch_qr("/api/hotspot_qr?kind=url",ac_qr_url);
+            if(w>0 && u>0) {
+                ac_qr_wifi_size=w;ac_qr_url_size=u;
+                atomic_store(&ac_qr_ready,1);
+            }
+        }
         usleep(500000);
     }
     return NULL;

@@ -44,6 +44,16 @@ typedef struct {
 extern AcStatus ac_status;
 extern char ac_ui_debug[65536];
 extern _Atomic int ac_ui_debug_ready;
+
+/* QR module matrices fetched once by the worker thread and read by the GUI
+   thread when it builds the panel. Row-major, stride AC_QR_MAX; cell != 0 is a
+   dark module. Published via ac_qr_ready (release/acquire); never rewritten. */
+#define AC_QR_MAX 64
+extern unsigned char ac_qr_wifi[AC_QR_MAX*AC_QR_MAX];
+extern unsigned char ac_qr_url[AC_QR_MAX*AC_QR_MAX];
+extern int ac_qr_wifi_size;
+extern int ac_qr_url_size;
+extern _Atomic int ac_qr_ready;
 int ac_ui_prepare(void);
 void ac_ui_tick(void *ew_context,int32_t *changed);
 #endif
