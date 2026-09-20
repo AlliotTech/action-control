@@ -289,13 +289,13 @@ def main():
                 value = await_status(lambda s:s["panel_visible"] == 1, "Open panel")
                 previous_display = display("display-panel-%d" % cycle, previous_display)
                 width, height = value["width"], value["height"]
-                send("tap %d %d" % (width // 4, height - 44))
+                send("tap 608 242")
                 value = await_status(lambda s:s["clicks"] == cycle, "Hotspot toggle touch")
                 # clicks==cycle proves the synthesized tap reached the item slot. The
                 # toggle's label settles back to the same steady state (real AP up/down
                 # lags the sample window), so a final-frame pixel diff is not asserted.
                 previous_display = display("display-clicked-%d" % cycle)
-                send("tap %d %d" % (3 * width // 4, height - 44))
+                send("tap 608 338")
                 value = await_status(lambda s:s["panel_visible"] == 0 and s["closes"] == cycle, "Native return-button touch")
                 previous_display = display("display-returned-%d" % cycle, previous_display)
                 if args.exercise == "menu" and cycle < args.cycles:

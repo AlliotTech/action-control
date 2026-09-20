@@ -196,7 +196,8 @@ static void hotspot_slot(void *self,void *sender) {
        and refreshes hotspot_on. 2 (unknown) defaults to start. */
     int on=atomic_load(&ac_status.hotspot_on);
     atomic_store(&ac_status.hotspot_request,on==1?2:1);
-    ew.text_string(counter_text,string(on==1?"正在关闭热点…":"正在开启热点…"));
+    ew.text_string(counter_text,string(on==1?"关闭中…":"开启中…"));
+    ew.text_color(counter_text,0xffe0a53a);
 }
 
 static void configure_item(void *item,const char *title,void *self,void (*method)(void *,void *)) {
@@ -307,18 +308,25 @@ static void show_panel(void) {
     AcPoint corners[]={{0,0},{width,0},{width,height},{0,height}};
     for(int i=0;i<4;i++)ew.touch_point[i](blocker,corners[i]);
     ew.add(panel,blocker,0);
-    /* Two QRs across the top (7 px/module fits both in 712 px); controls below.
-       Left: Wi-Fi join (function 2A). Right: console URL (function 3). */
-    int mp=7,wy=28,wx=16,ready=atomic_load(&ac_qr_ready);
+    make_text(panel,(AcRect){16,8,width-16,40},"Action Control",0xffffffff);
+    /* 左区:两个二维码(各带标签)。右区:热点控制列(醒目状态+按钮)。
+       中间竖分隔线。6 px/模块腾出右列空间,仍保持可扫。 */
+    int mp=6,ready=atomic_load(&ac_qr_ready);
     int wifiw=(ready?ac_qr_wifi_size:41)*mp,urlw=(ready?ac_qr_url_size:33)*mp;
-    int ux=wx+wifiw+16;
-    make_text(panel,(AcRect){wx,4,ux-16,26},"扫码连 WiFi",0xffffffff);
-    make_text(panel,(AcRect){ux,4,ux+urlw,26},"扫码开控制台",0xffffffff);
-    counter_text=make_text(panel,(AcRect){ux+urlw+16,wy,width-16,wy+60},"",0xffb8b8b8);
-    if(ready && ac_qr_wifi_size>0)draw_qr(panel,wx,wy,mp,ac_qr_wifi,ac_qr_wifi_size);
-    if(ready && ac_qr_url_size>0)draw_qr(panel,ux,wy,mp,ac_qr_url,ac_qr_url_size);
-    make_button((AcRect){16,height-80,width/2-8,height-16},"开启/关闭热点",hotspot_slot);
-    make_button((AcRect){width/2+8,height-80,width-16,height-16},"返回",close_slot);
+    int qy=76,wx=16,ux=wx+wifiw+16;
+    make_text(panel,(AcRect){wx,44,wx+wifiw,72},"扫码连 WiFi",0xffffffff);
+    make_text(panel,(AcRect){ux,44,ux+urlw,72},"扫码开控制台",0xffffffff);
+    if(ready && ac_qr_wifi_size>0)draw_qr(panel,wx,qy,mp,ac_qr_wifi,ac_qr_wifi_size);
+    if(ready && ac_qr_url_size>0)draw_qr(panel,ux,qy,mp,ac_qr_url,ac_qr_url_size);
+    void *divider=ew.new_object(ew.rectangle_class,NULL);
+    ew.bounds(divider,(AcRect){500,44,502,356});
+    ew.rectangle_color(divider,0xff3a3a3a);
+    ew.add(panel,divider,0);
+    int cx=520;
+    make_text(panel,(AcRect){cx,70,width-16,104},"热点状态",0xffffffff);
+    counter_text=make_text(panel,(AcRect){cx,108,width-16,168},"检测中…",0xffb8b8b8);
+    make_button((AcRect){cx,196,width-16,288},"热点开关",hotspot_slot);
+    make_button((AcRect){cx,296,width-16,380},"返回",close_slot);
     ew.add(parent,panel,0);
     atomic_store(&ac_status.panel_visible,1);
 }
@@ -440,7 +448,8 @@ void ac_ui_tick(void *context,int32_t *changed) {
     if(panel && counter_text && !atomic_load(&ac_status.hotspot_busy)) {
         int on=atomic_load(&ac_status.hotspot_on);
         if(on!=shown_hotspot) {
-            ew.text_string(counter_text,string(on==1?"热点已开启":on==0?"热点已关闭":"热点状态未知"));
+            ew.text_string(counter_text,string(on==1?"已开启":on==0?"已关闭":"未知"));
+            ew.text_color(counter_text,on==1?0xff43d17a:on==0?0xff9a9a9a:0xffe0a53a);
             shown_hotspot=on;
             if(changed)*changed=1;
         }
