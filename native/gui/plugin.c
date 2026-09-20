@@ -208,11 +208,29 @@ static void *report_worker(void *unused) {
     return NULL;
 }
 
+/* Pull "key=value;" out of the config parameter string dji_gui passes to
+   gui_image_loader_create. Runtime read (the /etc overlay is mounted by then),
+   so it is reliable at cold boot where systemd-delivered env is not. */
+static const char *param_mode,*param_state;
+static void parse_params(const char *p) {
+    static char mbuf[16],sbuf[256];
+    if(!p)return;
+    const char *m=strstr(p,"ac_mode=");
+    if(m){m+=8;size_t i=0;while(m[i]&&m[i]!=';'&&i<sizeof(mbuf)-1){mbuf[i]=m[i];i++;}mbuf[i]=0;param_mode=mbuf;}
+    const char *s=strstr(p,"ac_state=");
+    if(s){s+=9;size_t i=0;while(s[i]&&s[i]!=';'&&i<sizeof(sbuf)-1){sbuf[i]=s[i];i++;}sbuf[i]=0;param_state=sbuf;}
+}
+
 static void attach_extension(void) {
-    const char *mode=getenv("ACTION_CONTROL_GUI_MODE");
-    const char *directory=getenv("ACTION_CONTROL_GUI_STATE");
+    /* Config-parameter values win; env is the trial-harness fallback. */
+    const char *mode=param_mode?param_mode:getenv("ACTION_CONTROL_GUI_MODE");
+    const char *directory=param_state?param_state:getenv("ACTION_CONTROL_GUI_STATE");
     if(!mode || (strcmp(mode,"probe") && strcmp(mode,"menu")))return;
     if(!directory || strncmp(directory,"/run/action-control-ui-",23) || strlen(directory)>=sizeof(state_dir))return;
+    /* Self-create the state dir as root 0700 so attach never depends on a
+       systemd ExecStartPre that this device skips at cold boot. */
+    mkdir(directory,0700);
+    chmod(directory,0700);
     struct stat st;
     if(lstat(directory,&st) || !S_ISDIR(st.st_mode) || st.st_uid!=0 || (st.st_mode&0022))return;
     memcpy(state_dir,directory,strlen(directory)+1);
@@ -249,6 +267,6 @@ int gui_image_loader_create(const char *parameters,void **out_interface) {
     pthread_once(&real_once,load_original);
     if(!real_create){if(out_interface)*out_interface=NULL;return -1001;}
     int result=real_create(parameters,out_interface);
-    if(!result && out_interface && *out_interface)pthread_once(&attach_once,attach_extension);
+    if(!result && out_interface && *out_interface) {parse_params(parameters);pthread_once(&attach_once,attach_extension);}
     return result;
 }

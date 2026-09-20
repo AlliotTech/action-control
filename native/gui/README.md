@@ -100,4 +100,10 @@ python3 tools/test-gui-plugin.py --serial 123456789ABCDEF --mode menu --exercise
 
 `--hold-panel --seconds 120` 可在自动检查后留出有时限的人工观察窗口，结束后恢复原界面。试验材料和覆盖配置均放在 `/run`，未修改磁盘上的 GUI 程序或原插件配置。若整机重启恢复分支触发，只在应用目录内保留诊断 JSON。
 
-将来若需要持久化安装，应用文件仍必须放在 `/blackbox/upgrade/action-control` 内。
+## 持久安装
+
+插件文件放 `/blackbox/upgrade/action-control/gui/`,通过**直接改 `/etc/disp0_plugins_config.json`** 把 `gui_image_loader_create` 条目的 `plugin` 指向该 `.so`,并在其 `parameter` 数组加 `ac_mode=menu;` `ac_state=/run/action-control-ui-persist;`。
+
+mode/state 走 config parameter 串(`dji_gui` 运行时读取,此时 `/etc` overlay 已挂),而非 systemd 环境变量——本机 systemd 在 `/etc` overlay 挂载前就解析了 `gui.service`,冷启动时 drop-in/主单元的 `Environment=` 与 `ExecStartPre=` 都不会应用到运行实例。插件在 attach 时自建 state 目录(root 0700),不依赖 `ExecStartPre`;env 仍作为试验 harness 的回退。fingerprint SHA 校验保留为安全闸。
+
+卸载:运行 `/blackbox/upgrade/action-control/gui/uninstall.sh`(从 `disp0_plugins_config.orig.json` 恢复原配置并重启 `gui.service`)。冷启动已验证:插件 5 秒内 attach、ticks 持续推进、面板两码经 scanout 解码可扫。
