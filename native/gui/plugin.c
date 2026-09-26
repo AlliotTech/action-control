@@ -145,15 +145,22 @@ static void *report_worker(void *unused) {
     snprintf(target,sizeof(target),"%s/status.json",state_dir);
     snprintf(temporary,sizeof(temporary),"%s/status.tmp",state_dir);
     snprintf(control,sizeof(control),"%s/command",state_dir);
+    static char last_status[1024];int last_len=-1;
     for(;;) {
         char buffer[1024];
         int n=snprintf(buffer,sizeof(buffer),"{\"pid\":%ld,\"attached\":%d,\"callback_ticks\":%lu,\"ew_update_cycle\":%u,\"callback_tid\":%ld,\"root_ready\":%d,\"panel_visible\":%d,\"menu_attached\":%d,\"clicks\":%d,\"entries\":%d,\"closes\":%d,\"menu_loads\":%d,\"native_items\":%d,\"width\":%d,\"height\":%d,\"control_found\":%d,\"touch_hits\":%d,\"command_result\":%d,\"error\":%d}\n",
             (long)getpid(),atomic_load(&attached),atomic_load(&ac_status.callback_ticks),atomic_load(&ac_status.ew_update_cycle),atomic_load(&ac_status.callback_tid),atomic_load(&ac_status.root_ready),atomic_load(&ac_status.panel_visible),atomic_load(&ac_status.menu_attached),atomic_load(&ac_status.clicks),atomic_load(&ac_status.entries),atomic_load(&ac_status.closes),atomic_load(&ac_status.menu_loads),atomic_load(&ac_status.native_items),atomic_load(&ac_status.root_width),atomic_load(&ac_status.root_height),atomic_load(&ac_status.control_found),atomic_load(&ac_status.touch_hits),atomic_load(&ac_status.command_result),atomic_load(&ac_status.error));
-        int fd=open(temporary,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC|O_NOFOLLOW,0600);
-        if(fd>=0) {
-            ssize_t written=write(fd,buffer,(size_t)n);
-            close(fd);
-            if(written==n)rename(temporary,target);
+        /* Only rewrite status.json when a field actually changed; the loop runs
+           every 500ms forever and the file lives on tmpfs, so this drops the
+           steady-state open/write/rename syscalls to zero while idle. */
+        int fd;
+        if(n>0 && (n!=last_len || memcmp(buffer,last_status,(size_t)n))) {
+            fd=open(temporary,O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC|O_NOFOLLOW,0600);
+            if(fd>=0) {
+                ssize_t written=write(fd,buffer,(size_t)n);
+                close(fd);
+                if(written==n){rename(temporary,target);memcpy(last_status,buffer,(size_t)n);last_len=n;}
+            }
         }
         if(atomic_load(&ac_ui_debug_ready)) {
             char path[320];snprintf(path,sizeof(path),"%s/tree.txt",state_dir);

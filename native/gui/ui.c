@@ -179,6 +179,25 @@ static void *find_group(void *group,void *type,int depth,int *budget) {
 }
 static void *find(void *type) {int budget=4096;return find_group(root_object,type,0,&budget);}
 
+/* Single DFS that records the first match of each of three vtables. The scan
+   loop needs settings/control/liveview every 50ms; one traversal covers the
+   same nodes as three separate find() calls at a third of the cast cost. */
+static void find_three(void *group,void *ta,void *tb,void *tc,void **oa,void **ob,void **oc,int depth,int *budget) {
+    if(depth>24 || --*budget<0)return;
+    if(!*oa && ew.cast(group,ta))*oa=group;
+    if(!*ob && ew.cast(group,tb))*ob=group;
+    if(!*oc && ew.cast(group,tc))*oc=group;
+    if(*oa && *ob && *oc)return;
+    void *child=NULL;
+    while((child=ew.next_view(group,child,0)) && *budget>0) {
+        if(child==panel)continue;
+        if(ew.cast(child,ew.group_class)) {
+            find_three(child,ta,tb,tc,oa,ob,oc,depth+1,budget);
+            if(*oa && *ob && *oc)return;
+        } else --*budget;
+    }
+}
+
 static void open_slot(void *self,void *sender) {
     (void)sender;
     if(self==settings) {open_pending=1;atomic_fetch_add(&ac_status.entries,1);}
@@ -344,9 +363,8 @@ static void detach_menu(void) {
     atomic_store(&ac_status.menu_attached,0);
 }
 
-static void inspect_menu(void) {
-    void *page=find(ew.settings_class);
-    atomic_store(&ac_status.control_found,find(ew.control_class)!=NULL);
+static void inspect_menu(void *page,void *control) {
+    atomic_store(&ac_status.control_found,control!=NULL);
     if(page!=settings)detach_menu();
     if(!page)return;
     int count=int_at(page,SETTINGS_NATIVE_COUNT);
@@ -401,11 +419,12 @@ void ac_ui_tick(void *context,int32_t *changed) {
     root_object=root;
     uint32_t now=ew.ticks();
     if(!last_scan || now-last_scan>=50) {
-        void *liveview=find(ew.liveview_class);
+        void *page=NULL,*control=NULL,*liveview=NULL;int budget=4096;
+        find_three(root_object,ew.settings_class,ew.control_class,ew.liveview_class,&page,&control,&liveview,0,&budget);
         AcRect r=bounds_of(settings?settings:(liveview?liveview:root_object));
         atomic_store(&ac_status.root_width,r.x2-r.x1);
         atomic_store(&ac_status.root_height,r.y2-r.y1);
-        inspect_menu();last_scan=now;
+        inspect_menu(page,control);last_scan=now;
     }
     if(gesture.active) {
         uint32_t elapsed=now-gesture.start;
