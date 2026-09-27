@@ -99,7 +99,8 @@ export interface NativeCameraStatus {
   reason?: string;
 }
 export type NativeRecordingAction = "start_recording" | "stop_recording";
-export type NativeAction = NativeRecordingAction | "capture" | "mode_photo" | "mode_video";
+export type NativeAction =
+  NativeRecordingAction | "capture" | "mode_photo" | "mode_video";
 export interface MimoPreviewStatus {
   source: "native_mimo_mirror";
   requires_mimo: true;
@@ -183,6 +184,26 @@ export interface MediaListing {
   truncated?: boolean;
   warnings: string[];
 }
+export interface NativeMediaMeta {
+  source: string;
+  indexed: boolean;
+  rating?: number;
+  highlight?: boolean;
+  duration_ms?: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  encode_format_raw?: number;
+  steady_mode_raw?: number;
+  nd_value?: number;
+  ev_bias?: number;
+  ei_value?: number;
+  aperture_raw?: number;
+  rotation?: number;
+  slowmotion_rate?: number;
+  fov_type_raw?: number;
+  gps_status?: number;
+}
 export interface MediaInfo {
   width: number;
   height: number;
@@ -191,6 +212,7 @@ export interface MediaInfo {
   duration_sec?: number;
   bitrate_bps?: number;
   size: number;
+  native?: NativeMediaMeta;
 }
 export interface MediaIndexStatus {
   storage: "sd" | "emulated";

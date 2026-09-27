@@ -4,7 +4,7 @@ import "testing"
 
 func TestParseNativeMediaMeta(t *testing.T) {
 	// Real AC004.db join row (video): 4K, 100fps (100000/1000), duration 24s.
-	out := []byte(`[{"star":2,"highlight":1,"duration":24000,"resolution_width":3840,"resolution_height":2160,"frame_num":100000,"frame_den":1000,"encode_format":2,"steady_mode":2,"nd_value":0,"ev_bias":17}]`)
+	out := []byte(`[{"star":2,"highlight":1,"duration":24000,"resolution_width":3840,"resolution_height":2160,"frame_num":100000,"frame_den":1000,"encode_format":2,"steady_mode":2,"nd_value":0,"ev_bias":17,"ei_value":0,"aperture":280,"rotation":0,"slowmotion_rate":1,"fov_type":1,"gps_status":0}]`)
 	meta, err := parseNativeMediaMeta(out)
 	if err != nil || meta == nil || !meta.Indexed {
 		t.Fatalf("parse failed: %+v %v", meta, err)
@@ -20,6 +20,12 @@ func TestParseNativeMediaMeta(t *testing.T) {
 	}
 	if meta.Width == nil || *meta.Width != 3840 {
 		t.Fatalf("width: %+v", meta.Width)
+	}
+	if meta.ApertureRaw == nil || *meta.ApertureRaw != 280 {
+		t.Fatalf("aperture raw: %+v", meta.ApertureRaw)
+	}
+	if meta.FOVTypeRaw == nil || *meta.FOVTypeRaw != 1 {
+		t.Fatalf("fov type raw: %+v", meta.FOVTypeRaw)
 	}
 
 	// Image row: no video_info (LEFT JOIN nulls), highlight 0 -> false.

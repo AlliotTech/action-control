@@ -249,10 +249,12 @@ func (s *fileStore) removeMediaIndexPath(ctx context.Context, virtual string, di
 	}
 	// dji_media_server may briefly hold the write lock. Retry with backoff; the
 	// file is already gone, so a persistent lock is not a delete failure — the
-	// stale row self-heals via the "clean stale index" tool. Surface it as
-	// errMediaIndexLocked so the caller can report a soft warning, not an error.
+	// stale row self-heals via the "clean stale index" tool. One statement per
+	// line plus .bail on makes a refused BEGIN IMMEDIATE surface as the real
+	// "database is locked" (a single line swallows it as "cannot commit"), so it
+	// classifies as errMediaIndexLocked and the caller reports a soft warning.
 	for attempt := 0; ; attempt++ {
-		_, err = s.runSQLite(ctx, location, false, ".timeout 3000\nBEGIN IMMEDIATE; DELETE FROM gis_info_table WHERE "+mediaIndexPredicate(name, directory)+"; COMMIT;\n")
+		_, err = s.runSQLite(ctx, location, false, ".bail on\n.timeout 3000\nBEGIN IMMEDIATE;\nDELETE FROM gis_info_table WHERE "+mediaIndexPredicate(name, directory)+";\nCOMMIT;\n")
 		if err == nil {
 			return nil
 		}
@@ -285,36 +287,56 @@ func (s *fileStore) cleanMediaIndex(ctx context.Context, storage string) (MediaI
 	if len(stale) == 0 {
 		return MediaIndexCleanup{OK: true, Storage: storage}, nil
 	}
+	// Probe the write lock before creating any file. .backup only reads, so it
+	// succeeds even while dji_media_server holds the write lock and would leave a
+	// full-size copy behind after the DELETE fails; a BEGIN IMMEDIATE that we
+	// immediately roll back fails fast when the lock is held. One statement per
+	// line plus .bail on surfaces the real "database is locked" instead of a
+	// downstream "cannot commit" once BEGIN IMMEDIATE is refused.
+	if _, err = s.runSQLite(ctx, location, false, ".bail on\n.timeout 5000\nBEGIN IMMEDIATE;\nROLLBACK;\n"); err != nil {
+		return MediaIndexCleanup{}, err
+	}
 	backupName := "AC004.db.bak_" + time.Now().Format("20060102_150405.000000000")
-	backup := filepath.Join(filepath.Dir(s.app.Path(location.Database)), backupName)
-	if _, err = s.runSQLite(ctx, location, false, ".backup "+strconv.Quote(backup)+"\n"); err != nil {
+	backupPath := filepath.Join(filepath.Dir(s.app.Path(location.Database)), backupName)
+	// The probe released the lock when its process exited, so the native service
+	// may reacquire it before the DELETE below. Every post-backup error path
+	// removes the backup so a failed cleanup never orphans a copy on the card.
+	if _, err = s.runSQLite(ctx, location, false, ".backup "+strconv.Quote(backupPath)+"\n"); err != nil {
+		os.Remove(backupPath)
 		return MediaIndexCleanup{}, fmt.Errorf("backup AC004.db: %w", err)
 	}
 	status, stale, err = s.scanMediaIndex(ctx, storage)
 	if err != nil {
+		os.Remove(backupPath)
 		return MediaIndexCleanup{}, err
 	}
-	backupVirtual := location.Virtual + "/MISC/" + backupName
 	if len(stale) == 0 {
-		return MediaIndexCleanup{OK: true, Storage: storage, Backup: backupVirtual}, nil
+		os.Remove(backupPath)
+		return MediaIndexCleanup{OK: true, Storage: storage}, nil
 	}
 	values := make([]string, len(stale))
 	for i, name := range stale {
 		values[i] = sqliteLiteral(name)
 	}
-	out, err := s.runSQLite(ctx, location, false, ".timeout 5000\nBEGIN IMMEDIATE; DELETE FROM gis_info_table WHERE file_name IN ("+strings.Join(values, ",")+"); SELECT changes(); COMMIT;\n")
+	out, err := s.runSQLite(ctx, location, false, ".bail on\n.timeout 5000\nBEGIN IMMEDIATE;\nDELETE FROM gis_info_table WHERE file_name IN ("+strings.Join(values, ",")+");\nSELECT changes();\nCOMMIT;\n")
 	if err != nil {
+		os.Remove(backupPath)
 		return MediaIndexCleanup{}, err
 	}
 	deleted, err := strconv.Atoi(strings.TrimSpace(string(out)))
 	if err != nil {
+		os.Remove(backupPath)
 		return MediaIndexCleanup{}, fmt.Errorf("invalid sqlite3 change count: %w", err)
+	}
+	if deleted == 0 {
+		os.Remove(backupPath)
+		return MediaIndexCleanup{OK: true, Storage: storage}, nil
 	}
 	status, _, err = s.scanMediaIndex(ctx, storage)
 	if err != nil {
 		return MediaIndexCleanup{}, err
 	}
-	return MediaIndexCleanup{OK: true, Storage: storage, Deleted: deleted, Remaining: status.Stale, Backup: backupVirtual}, nil
+	return MediaIndexCleanup{OK: true, Storage: storage, Deleted: deleted, Remaining: status.Stale, Backup: location.Virtual + "/MISC/" + backupName}, nil
 }
 
 func mediaIndexErrorCode(err error) (int, string, error) {
@@ -329,18 +351,24 @@ func mediaIndexErrorCode(err error) (int, string, error) {
 // values are reported as stored; no enum is guessed. video_info_table holds
 // real width/height/fps, so no lookup table is needed here.
 type NativeMediaMeta struct {
-	Source     string   `json:"source"`
-	Indexed    bool     `json:"indexed"`
-	Rating     *int     `json:"rating,omitempty"`
-	Highlight  *bool    `json:"highlight,omitempty"`
-	DurationMS *int64   `json:"duration_ms,omitempty"`
-	Width      *int     `json:"width,omitempty"`
-	Height     *int     `json:"height,omitempty"`
-	FPS        *float64 `json:"fps,omitempty"`
-	EncodeRaw  *int     `json:"encode_format_raw,omitempty"`
-	SteadyRaw  *int     `json:"steady_mode_raw,omitempty"`
-	NDValue    *int     `json:"nd_value,omitempty"`
-	EVBias     *int     `json:"ev_bias,omitempty"`
+	Source         string   `json:"source"`
+	Indexed        bool     `json:"indexed"`
+	Rating         *int     `json:"rating,omitempty"`
+	Highlight      *bool    `json:"highlight,omitempty"`
+	DurationMS     *int64   `json:"duration_ms,omitempty"`
+	Width          *int     `json:"width,omitempty"`
+	Height         *int     `json:"height,omitempty"`
+	FPS            *float64 `json:"fps,omitempty"`
+	EncodeRaw      *int     `json:"encode_format_raw,omitempty"`
+	SteadyRaw      *int     `json:"steady_mode_raw,omitempty"`
+	NDValue        *int     `json:"nd_value,omitempty"`
+	EVBias         *int     `json:"ev_bias,omitempty"`
+	EIValue        *int     `json:"ei_value,omitempty"`
+	ApertureRaw    *int     `json:"aperture_raw,omitempty"`
+	Rotation       *int     `json:"rotation,omitempty"`
+	SlowmotionRate *int     `json:"slowmotion_rate,omitempty"`
+	FOVTypeRaw     *int     `json:"fov_type_raw,omitempty"`
+	GPSStatus      *int     `json:"gps_status,omitempty"`
 }
 
 func (s *fileStore) nativeMediaMeta(ctx context.Context, virtual string) (*NativeMediaMeta, error) {
@@ -353,7 +381,8 @@ func (s *fileStore) nativeMediaMeta(ctx context.Context, virtual string) (*Nativ
 	}
 	out, err := s.runSQLite(ctx, location, true, "PRAGMA query_only=ON; SELECT g.star, g.highlight, "+
 		"v.duration, v.resolution_width, v.resolution_height, v.frame_num, v.frame_den, "+
-		"v.encode_format, v.steady_mode, v.nd_value, v.ev_bias "+
+		"v.encode_format, v.steady_mode, v.nd_value, v.ev_bias, "+
+		"v.ei_value, v.aperture, v.rotation, v.slowmotion_rate, v.fov_type, v.gps_status "+
 		"FROM gis_info_table g LEFT JOIN video_info_table v ON g.video_index = v.ID "+
 		"WHERE g.file_name = "+sqliteLiteral(name)+" LIMIT 1;\n")
 	if err != nil {
@@ -377,6 +406,12 @@ func parseNativeMediaMeta(out []byte) (*NativeMediaMeta, error) {
 		Steady    *int   `json:"steady_mode"`
 		ND        *int   `json:"nd_value"`
 		EV        *int   `json:"ev_bias"`
+		EI        *int   `json:"ei_value"`
+		Aperture  *int   `json:"aperture"`
+		Rotation  *int   `json:"rotation"`
+		Slowmo    *int   `json:"slowmotion_rate"`
+		FOV       *int   `json:"fov_type"`
+		GPS       *int   `json:"gps_status"`
 	}
 	if len(strings.TrimSpace(string(out))) == 0 {
 		return &NativeMediaMeta{Source: "native_index", Indexed: false}, nil
@@ -388,7 +423,7 @@ func parseNativeMediaMeta(out []byte) (*NativeMediaMeta, error) {
 		return &NativeMediaMeta{Source: "native_index", Indexed: false}, nil
 	}
 	r := rows[0]
-	meta := &NativeMediaMeta{Source: "native_index", Indexed: true, Rating: r.Star, DurationMS: r.Duration, Width: r.Width, Height: r.Height, EncodeRaw: r.Encode, SteadyRaw: r.Steady, NDValue: r.ND, EVBias: r.EV}
+	meta := &NativeMediaMeta{Source: "native_index", Indexed: true, Rating: r.Star, DurationMS: r.Duration, Width: r.Width, Height: r.Height, EncodeRaw: r.Encode, SteadyRaw: r.Steady, NDValue: r.ND, EVBias: r.EV, EIValue: r.EI, ApertureRaw: r.Aperture, Rotation: r.Rotation, SlowmotionRate: r.Slowmo, FOVTypeRaw: r.FOV, GPSStatus: r.GPS}
 	if r.Highlight != nil {
 		h := *r.Highlight != 0
 		meta.Highlight = &h
@@ -398,4 +433,48 @@ func parseNativeMediaMeta(out []byte) (*NativeMediaMeta, error) {
 		meta.FPS = &fps
 	}
 	return meta, nil
+}
+
+// embeddedPreviewExtent returns the byte range of the screennail the native
+// index stored inside the media file named by virtual — a small preview JPEG
+// the camera already encoded, so a thumbnail can skip a full-resolution decode
+// or an ffmpeg pass over a multi-gigabyte video. Videos carry 64-bit offsets in
+// video_info_table; photos carry 32-bit offsets in image_info_table. ok is
+// false whenever the file is unindexed, has no screennail, or the index is
+// unavailable, so the caller decodes the original instead.
+func (s *fileStore) embeddedPreviewExtent(ctx context.Context, virtual string) (offset, size int64, ok bool) {
+	location, name, found := mediaIndexForPath(virtual)
+	if !found {
+		return 0, 0, false
+	}
+	if _, ready, err := s.mediaIndexReady(location); err != nil || !ready {
+		return 0, 0, false
+	}
+	out, err := s.runSQLite(ctx, location, true, "PRAGMA query_only=ON; "+
+		"SELECT i.scr_offset AS img_off, i.scr_size AS img_sz, "+
+		"v.scr_offset64 AS vid_off, v.scr_size64 AS vid_sz "+
+		"FROM gis_info_table g "+
+		"LEFT JOIN image_info_table i ON g.image_index = i.ID "+
+		"LEFT JOIN video_info_table v ON g.video_index = v.ID "+
+		"WHERE g.file_name = "+sqliteLiteral(name)+" LIMIT 1;\n")
+	if err != nil {
+		return 0, 0, false
+	}
+	var rows []struct {
+		ImgOff *int64 `json:"img_off"`
+		ImgSz  *int64 `json:"img_sz"`
+		VidOff *int64 `json:"vid_off"`
+		VidSz  *int64 `json:"vid_sz"`
+	}
+	if len(strings.TrimSpace(string(out))) == 0 || json.Unmarshal(out, &rows) != nil || len(rows) == 0 {
+		return 0, 0, false
+	}
+	r := rows[0]
+	if r.VidOff != nil && r.VidSz != nil && *r.VidOff >= 0 && *r.VidSz > 0 {
+		return *r.VidOff, *r.VidSz, true
+	}
+	if r.ImgOff != nil && r.ImgSz != nil && *r.ImgOff >= 0 && *r.ImgSz > 0 {
+		return *r.ImgOff, *r.ImgSz, true
+	}
+	return 0, 0, false
 }

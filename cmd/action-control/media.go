@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -208,17 +209,30 @@ func (s *fileStore) thumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tmp.Close()
 	defer os.Remove(tmp.Name())
-	cfg, _, decodeErr := image.DecodeConfig(io.LimitReader(input, 2<<20))
-	if _, err = input.Seek(0, io.SeekStart); err != nil {
-		fileError(w, err)
-		return
+	// Prefer the screennail the camera already embedded: for a video this skips
+	// an ffmpeg pass over a multi-gigabyte file, and for a photo it decodes a
+	// small preview instead of the full-resolution original. Any failure falls
+	// through to decoding the original media below.
+	var decodeSource io.Reader
+	var cfg image.Config
+	var decodeErr error
+	if preview, ok := s.nativePreviewJPEG(r.Context(), name, input, st.Size()); ok {
+		cfg, _, decodeErr = image.DecodeConfig(bytes.NewReader(preview))
+		decodeSource = bytes.NewReader(preview)
+	} else {
+		cfg, _, decodeErr = image.DecodeConfig(io.LimitReader(input, 2<<20))
+		if _, err = input.Seek(0, io.SeekStart); err != nil {
+			fileError(w, err)
+			return
+		}
+		decodeSource = input
 	}
 	if decodeErr == nil {
 		if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > 40_000_000 {
 			jsonError(w, 413, "image_dimensions", errors.New("thumbnail image exceeds 40 megapixels"))
 			return
 		}
-		img, _, e := image.Decode(input)
+		img, _, e := image.Decode(decodeSource)
 		if e != nil {
 			jsonError(w, 422, "image_decode", e)
 			return
@@ -302,4 +316,27 @@ func (s *fileStore) trimThumbnails(dir string) {
 			total -= f.size
 		}
 	}
+}
+
+// nativePreviewJPEG reads the screennail the native index located inside file
+// and returns it only when the bytes are a self-contained JPEG that decodes.
+// Every uncertainty — no index entry, an extent outside the file, a short read,
+// wrong JPEG magic, or an undecodable payload — returns ok=false so the caller
+// falls back to decoding the original media.
+func (s *fileStore) nativePreviewJPEG(ctx context.Context, virtual string, file io.ReaderAt, fileSize int64) ([]byte, bool) {
+	offset, size, ok := s.embeddedPreviewExtent(ctx, virtual)
+	if !ok || size < 4 || size > 4<<20 || offset < 0 || offset+size > fileSize {
+		return nil, false
+	}
+	buf := make([]byte, size)
+	if n, err := file.ReadAt(buf, offset); err != nil || int64(n) != size {
+		return nil, false
+	}
+	if buf[0] != 0xFF || buf[1] != 0xD8 || buf[size-2] != 0xFF || buf[size-1] != 0xD9 {
+		return nil, false
+	}
+	if _, _, err := image.DecodeConfig(bytes.NewReader(buf)); err != nil {
+		return nil, false
+	}
+	return buf, true
 }

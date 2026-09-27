@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/jpeg"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func putTestFile(t *testing.T, name string, data []byte, mode os.FileMode) {
@@ -375,6 +378,208 @@ INSERT INTO gis_info_table(file_name) VALUES
 	result, err = store.cleanMediaIndex(context.Background(), "emulated")
 	if err != nil || result.Storage != "emulated" || result.Deleted != 1 || result.Remaining != 0 || !strings.HasPrefix(result.Backup, "/emulated/MISC/") {
 		t.Fatalf("internal cleanup failed: %+v %v", result, err)
+	}
+}
+
+func TestMediaIndexCleanupLockedLeavesNoBackup(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not installed")
+	}
+	a, _ := testApplication(t)
+	sd, _ := mediaIndexLocationFor("sd")
+	db := a.Path(sd.Database)
+	if err := os.MkdirAll(filepath.Dir(db), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// One stale row so cleanup has work to do and reaches the write-lock probe.
+	create := exec.Command("sqlite3", db, `
+CREATE TABLE gis_info_table (ID INTEGER PRIMARY KEY, file_name TEXT);
+INSERT INTO gis_info_table(file_name) VALUES ('/mnt/media_rw/sd/DCIM/stale.mp4');`)
+	if out, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create media index: %v: %s", err, out)
+	}
+
+	// Hold the write lock from a peer connection, mimicking dji_media_server.
+	holder := exec.Command("sqlite3", db)
+	stdin, err := holder.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stdin.Close(); _ = holder.Wait() }()
+	if _, err = io.WriteString(stdin, "BEGIN IMMEDIATE;\n"); err != nil {
+		t.Fatal(err)
+	}
+	locked := func() bool {
+		probe := exec.Command("sqlite3", db)
+		probe.Stdin = strings.NewReader(".bail on\n.timeout 200\nBEGIN IMMEDIATE;\nROLLBACK;\n")
+		return probe.Run() != nil
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !locked() {
+		if time.Now().After(deadline) {
+			t.Fatal("peer connection did not acquire the write lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	store := &fileStore{app: a}
+	if _, err = store.cleanMediaIndex(context.Background(), "sd"); !errors.Is(err, errMediaIndexLocked) {
+		t.Fatalf("locked cleanup did not report a locked index: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(db))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "AC004.db.bak_") {
+			t.Fatalf("locked cleanup left an orphan backup: %s", entry.Name())
+		}
+	}
+}
+
+func TestThumbnailUsesEmbeddedScreennail(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not installed")
+	}
+	a, h := testApplication(t)
+	sd, _ := mediaIndexLocationFor("sd")
+	db := a.Path(sd.Database)
+	if err := os.MkdirAll(filepath.Dir(db), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// A decodable JPEG standing in for the screennail the camera embeds.
+	var jbuf bytes.Buffer
+	if err := jpeg.Encode(&jbuf, image.NewRGBA(image.Rect(0, 0, 300, 200)), &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	screennail := jbuf.Bytes()
+	const offset = 5000
+	// Bytes at offset 0 are neither a decodable image nor a video, so a valid
+	// JPEG response proves the thumbnail came from the embedded screennail and
+	// never touched the ffmpeg fallback.
+	file := make([]byte, offset)
+	file = append(file, screennail...)
+	file = append(file, make([]byte, 1024)...)
+	putTestFile(t, a.Path("/mnt/media_rw/sd/DCIM/clip.mp4"), file, 0600)
+
+	create := exec.Command("sqlite3", db,
+		"CREATE TABLE gis_info_table (ID INTEGER PRIMARY KEY, file_name TEXT, video_index INT, image_index INT);"+
+			"CREATE TABLE image_info_table (ID INTEGER PRIMARY KEY, scr_offset INT, scr_size INT);"+
+			"CREATE TABLE video_info_table (ID INTEGER PRIMARY KEY, scr_offset64 INT, scr_size64 INT);"+
+			"INSERT INTO video_info_table(ID, scr_offset64, scr_size64) VALUES (1, "+strconv.Itoa(offset)+", "+strconv.Itoa(len(screennail))+");"+
+			"INSERT INTO gis_info_table(file_name, video_index, image_index) VALUES ('/mnt/media_rw/sd/DCIM/clip.mp4', 1, 0);")
+	if out, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create media index: %v: %s", err, out)
+	}
+
+	w := requestTest(a, h, "GET", "/api/thumbnail?file=/sd/DCIM/clip.mp4", nil, nil)
+	if w.Code != 200 || w.Header().Get("Content-Type") != "image/jpeg" {
+		t.Fatalf("embedded thumbnail not served: %d %s", w.Code, w.Body.String())
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(w.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("thumbnail is not a decodable JPEG: %v", err)
+	}
+	if cfg.Width != 300 || cfg.Height != 200 {
+		t.Fatalf("unexpected thumbnail dimensions %dx%d", cfg.Width, cfg.Height)
+	}
+}
+
+func TestNativeMediaMetaQueriesExtendedFields(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not installed")
+	}
+	a, _ := testApplication(t)
+	sd, _ := mediaIndexLocationFor("sd")
+	db := a.Path(sd.Database)
+	if err := os.MkdirAll(filepath.Dir(db), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Real column layout so the SELECT column list is exercised end to end; a
+	// typo in the query would fail here, which the pure parse test cannot catch.
+	create := exec.Command("sqlite3", db, `
+CREATE TABLE gis_info_table (ID INTEGER PRIMARY KEY, file_name TEXT, star INT, highlight INT, video_index INT, image_index INT);
+CREATE TABLE video_info_table (ID INTEGER PRIMARY KEY, duration INT, resolution_width INT, resolution_height INT, frame_num INT, frame_den INT, encode_format INT, steady_mode INT, nd_value INT, ev_bias INT, ei_value INT, aperture INT, rotation INT, slowmotion_rate INT, fov_type INT, gps_status INT);
+INSERT INTO video_info_table VALUES (1, 24000, 3840, 2160, 100000, 1000, 2, 2, 0, 17, 0, 280, 0, 1, 1, 0);
+INSERT INTO gis_info_table VALUES (1, '/mnt/media_rw/sd/DCIM/clip.mp4', 2, 1, 1, 0);`)
+	if out, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create media index: %v: %s", err, out)
+	}
+	store := &fileStore{app: a}
+	meta, err := store.nativeMediaMeta(context.Background(), "/sd/DCIM/clip.mp4")
+	if err != nil || meta == nil || !meta.Indexed {
+		t.Fatalf("native meta failed: %+v %v", meta, err)
+	}
+	if meta.ApertureRaw == nil || *meta.ApertureRaw != 280 {
+		t.Fatalf("aperture_raw not queried: %+v", meta.ApertureRaw)
+	}
+	if meta.FOVTypeRaw == nil || *meta.FOVTypeRaw != 1 {
+		t.Fatalf("fov_type_raw not queried: %+v", meta.FOVTypeRaw)
+	}
+	if meta.EVBias == nil || *meta.EVBias != 17 {
+		t.Fatalf("ev_bias: %+v", meta.EVBias)
+	}
+	if meta.SlowmotionRate == nil || *meta.SlowmotionRate != 1 {
+		t.Fatalf("slowmotion_rate: %+v", meta.SlowmotionRate)
+	}
+}
+
+func TestDeleteUnderLockedIndexReturnsSoftWarning(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not installed")
+	}
+	a, h := testApplication(t)
+	sd, _ := mediaIndexLocationFor("sd")
+	db := a.Path(sd.Database)
+	if err := os.MkdirAll(filepath.Dir(db), 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := a.Path("/mnt/media_rw/sd/DCIM/clip.mp4")
+	putTestFile(t, target, []byte("data"), 0600)
+	create := exec.Command("sqlite3", db, `
+CREATE TABLE gis_info_table (ID INTEGER PRIMARY KEY, file_name TEXT);
+INSERT INTO gis_info_table(file_name) VALUES ('/mnt/media_rw/sd/DCIM/clip.mp4');`)
+	if out, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("create media index: %v: %s", err, out)
+	}
+
+	// Hold the write lock like dji_media_server so the index sync cannot commit.
+	holder := exec.Command("sqlite3", db)
+	stdin, err := holder.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stdin.Close(); _ = holder.Wait() }()
+	if _, err = io.WriteString(stdin, "BEGIN IMMEDIATE;\n"); err != nil {
+		t.Fatal(err)
+	}
+	locked := func() bool {
+		probe := exec.Command("sqlite3", db)
+		probe.Stdin = strings.NewReader(".bail on\n.timeout 200\nBEGIN IMMEDIATE;\nROLLBACK;\n")
+		return probe.Run() != nil
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !locked() {
+		if time.Now().After(deadline) {
+			t.Fatal("peer connection did not acquire the write lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The file unlink succeeds; the locked index sync must degrade to a soft
+	// warning (200), never a hard 500, or the user sees a spurious delete error.
+	w := requestTest(a, h, "DELETE", "/api/delete", strings.NewReader(`{"path":"/sd/DCIM/clip.mp4"}`), nil)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "warning") {
+		t.Fatalf("locked delete was not a soft warning: %d %s", w.Code, w.Body.String())
+	}
+	if _, err = os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("file was not deleted: %v", err)
 	}
 }
 

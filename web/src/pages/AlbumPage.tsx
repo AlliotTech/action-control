@@ -25,6 +25,7 @@ import type {
   MediaInfo,
   MediaItem,
   MediaListing,
+  NativeMediaMeta,
 } from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -98,6 +99,47 @@ function Thumbnail({ item }: { item: MediaItem }) {
         </span>
       )}
     </>
+  );
+}
+
+function NativeMeta({ meta }: { meta: NativeMediaMeta }) {
+  const entries: [string, string][] = [];
+  if (meta.rating != null && meta.rating > 0)
+    entries.push(["星标", "★".repeat(Math.min(5, meta.rating))]);
+  if (meta.highlight) entries.push(["精彩标记", "是"]);
+  if (meta.ev_bias != null && meta.ev_bias !== 0)
+    entries.push(["EV", `代码 ${meta.ev_bias}`]);
+  if (meta.nd_value != null && meta.nd_value > 0)
+    entries.push(["ND", `代码 ${meta.nd_value}`]);
+  if (meta.ei_value != null && meta.ei_value > 0)
+    entries.push(["EI", String(meta.ei_value)]);
+  if (meta.aperture_raw != null && meta.aperture_raw > 0)
+    entries.push(["光圈", `f/${(meta.aperture_raw / 100).toFixed(1)}`]);
+  if (meta.steady_mode_raw != null)
+    entries.push(["防抖", `代码 ${meta.steady_mode_raw}`]);
+  if (meta.fov_type_raw != null)
+    entries.push(["视角", `代码 ${meta.fov_type_raw}`]);
+  if (meta.rotation != null && meta.rotation !== 0)
+    entries.push(["旋转", `${meta.rotation}°`]);
+  if (meta.slowmotion_rate != null && meta.slowmotion_rate > 1)
+    entries.push(["慢动作", `${meta.slowmotion_rate}×`]);
+  if (meta.gps_status != null && meta.gps_status > 0)
+    entries.push(["GPS", "已记录"]);
+  if (entries.length === 0) return null;
+  return (
+    <div className="mt-3 border-t pt-3">
+      <p className="mb-2 text-xs font-medium uppercase tracking-wide">
+        相机原生参数
+      </p>
+      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {entries.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }
 
@@ -253,7 +295,8 @@ export function AlbumPage() {
           );
         }
         // File is deleted even when the index sync is deferred; deselect it.
-        if (result.warning) warnings.push(`「${item.name}」：${result.warning}`);
+        if (result.warning)
+          warnings.push(`「${item.name}」：${result.warning}`);
         setSelected((previous) => {
           const next = new Map(previous);
           next.delete(item.path);
@@ -841,38 +884,43 @@ export function AlbumPage() {
                   <Notice tone="warning">{info.error.message}</Notice>
                 ) : (
                   info.data && (
-                    <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-                      <div>
-                        <dt>分辨率</dt>
-                        <dd>
-                          {info.data.width} × {info.data.height}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>编码</dt>
-                        <dd>{info.data.codec}</dd>
-                      </div>
-                      {info.data.fps != null && (
+                    <>
+                      <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
                         <div>
-                          <dt>帧率</dt>
-                          <dd>{info.data.fps.toFixed(2)} fps</dd>
-                        </div>
-                      )}
-                      {info.data.duration_sec != null && (
-                        <div>
-                          <dt>时长</dt>
-                          <dd>{info.data.duration_sec.toFixed(1)} 秒</dd>
-                        </div>
-                      )}
-                      {info.data.bitrate_bps != null && (
-                        <div>
-                          <dt>码率</dt>
+                          <dt>分辨率</dt>
                           <dd>
-                            {(info.data.bitrate_bps / 1e6).toFixed(2)} Mbps
+                            {info.data.width} × {info.data.height}
                           </dd>
                         </div>
+                        <div>
+                          <dt>编码</dt>
+                          <dd>{info.data.codec}</dd>
+                        </div>
+                        {info.data.fps != null && (
+                          <div>
+                            <dt>帧率</dt>
+                            <dd>{info.data.fps.toFixed(2)} fps</dd>
+                          </div>
+                        )}
+                        {info.data.duration_sec != null && (
+                          <div>
+                            <dt>时长</dt>
+                            <dd>{info.data.duration_sec.toFixed(1)} 秒</dd>
+                          </div>
+                        )}
+                        {info.data.bitrate_bps != null && (
+                          <div>
+                            <dt>码率</dt>
+                            <dd>
+                              {(info.data.bitrate_bps / 1e6).toFixed(2)} Mbps
+                            </dd>
+                          </div>
+                        )}
+                      </dl>
+                      {info.data.native && (
+                        <NativeMeta meta={info.data.native} />
                       )}
-                    </dl>
+                    </>
                   )
                 )}
               </div>
