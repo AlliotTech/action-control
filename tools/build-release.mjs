@@ -153,6 +153,11 @@ try {
   await verifyELF(join(payload, "action-control"));
   for (const tool of ["ffmpeg", "ffprobe", "sqlite3"])
     await copyFile(join(media, "bin", tool), join(payload, "bin", tool));
+  run("node", [join(root, "tools", "build-gui-plugin.mjs")]);
+  await copyFile(
+    join(root, ".build-tools", "gui-plugin", "libaction_control_gui.so"),
+    join(payload, "bin", "libaction_control_gui.so"),
+  );
   for (const entry of await readdir(join(media, "licenses"), {
     withFileTypes: true,
   })) {

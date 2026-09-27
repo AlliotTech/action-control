@@ -166,6 +166,9 @@ func installNew(a *App, source string) error {
 	if _, err = a.Run(a.Ctx, 10*time.Second, "systemctl", "--no-block", "start", NetworkServiceName); err != nil {
 		return err
 	}
+	if err = applyGuiPlugin(a); err != nil {
+		fmt.Println("GUI plugin not activated:", err)
+	}
 	state.Phase = "active"
 	if err = writeState(a, state); err != nil {
 		return err
@@ -314,6 +317,9 @@ func uninstallApp(a *App, reboot bool) error {
 		}
 		if err = restoreShared(a, state); err != nil {
 			return err
+		}
+		if err = restoreGuiPlugin(a); err != nil {
+			fmt.Println("GUI plugin restore incomplete:", err)
 		}
 	}
 	state.Phase = "removing"

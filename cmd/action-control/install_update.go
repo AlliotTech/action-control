@@ -366,6 +366,9 @@ func updateApp(a *App, source string, reboot bool) error {
 		if err = waitReady(a, manifest.Version); err != nil {
 			return fail(err)
 		}
+		if err = applyGuiPlugin(a); err != nil {
+			fmt.Println("GUI plugin not activated:", err)
+		}
 	}
 	state.Phase = "active"
 	update.Phase = "complete"
