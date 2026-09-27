@@ -44,12 +44,12 @@ import {
 } from "@/components/ui/select";
 import {
   Card,
-  ConfirmButton,
   Notice,
   PageHeader,
   Spinner,
   formatBytes,
 } from "../ui";
+import { ConfirmButton } from "../dialogs";
 
 const resolutions = [
   "320x240",

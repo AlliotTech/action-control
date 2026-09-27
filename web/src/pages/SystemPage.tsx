@@ -26,7 +26,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, ConfirmButton, Notice, PageHeader, Spinner } from "../ui";
+import { Card, Notice, PageHeader, Spinner } from "../ui";
+import { ConfirmButton } from "../dialogs";
 
 type CommandResult = {
   stdout: string;

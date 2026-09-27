@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
   Download,
@@ -54,15 +54,14 @@ import {
 } from "@/components/ui/table";
 import {
   Card,
-  ConfirmButton,
   EmptyState,
-  Modal,
   Notice,
   PageHeader,
   Spinner,
   formatBytes,
   formatDate,
 } from "../ui";
+import { ConfirmButton, Modal } from "../dialogs";
 
 export function FilesPage() {
   const [dir, setDir] = useViewState("files.dir", "/", routeParam("dir"));
@@ -86,10 +85,13 @@ export function FilesPage() {
   const files = useAPI<FileListing>("list", { dir });
   usePageScroll("files", !files.isPending);
   const disk = useAPI<DiskUsage>("disk_usage", { path: dir });
-  const items =
-    files.data?.items.filter((item) =>
-      item.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
-    ) ?? [];
+  const items = useMemo(
+    () =>
+      files.data?.items.filter((item) =>
+        item.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
+      ) ?? [],
+    [files.data, search],
+  );
   const refresh = () => invalidate("list", "disk_usage", "media_list");
 
   return (

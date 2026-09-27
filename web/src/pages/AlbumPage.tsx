@@ -40,15 +40,14 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  ConfirmButton,
   EmptyState,
-  Modal,
   Notice,
   PageHeader,
   Spinner,
   formatBytes,
   formatDate,
 } from "../ui";
+import { ConfirmButton, Modal } from "../dialogs";
 import {
   pageLink,
   parentPath,

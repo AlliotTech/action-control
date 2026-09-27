@@ -59,6 +59,7 @@ async function pump() {
       const controller = new AbortController();
       current = { id, controller };
       const started = performance.now();
+      let lastProgress = 0;
       update(id, {
         status: "uploading",
         loaded: 0,
@@ -67,10 +68,13 @@ async function pump() {
       });
       try {
         await uploadFile(file, dir, controller.signal, (fraction) => {
+          const now = performance.now();
+          if (fraction < 1 && now - lastProgress < 150) return;
+          lastProgress = now;
           const loaded = Math.min(size, Math.round(size * fraction));
           update(id, {
             loaded,
-            speed: loaded / Math.max(0.1, (performance.now() - started) / 1000),
+            speed: loaded / Math.max(0.1, (now - started) / 1000),
             status: fraction >= 1 ? "saving" : "uploading",
           });
         });

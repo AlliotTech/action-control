@@ -1,9 +1,9 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Check, RotateCcw, Upload, X } from "lucide-react";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Progress } from "./ui/progress";
-import { EmptyState, Modal, formatBytes } from "../ui";
+import { EmptyState, formatBytes } from "../ui";
 import {
   activeUpload,
   cancelUpload,
@@ -13,6 +13,10 @@ import {
   useUploads,
 } from "../lib/uploads";
 import { pageLink } from "../lib/view-state";
+
+const Modal = lazy(() =>
+  import("../dialogs").then((module) => ({ default: module.Modal })),
+);
 
 const labels = {
   queued: "等待上传",
@@ -48,6 +52,7 @@ export function UploadCenter() {
         <span className="hidden sm:inline">上传任务</span>
         {active > 0 && <span className="tabular-nums">{active}</span>}
       </Button>
+      <Suspense fallback={null}>
       <Modal
         open={open}
         onOpenChange={showUploads}
@@ -157,6 +162,7 @@ export function UploadCenter() {
           </>
         )}
       </Modal>
+      </Suspense>
     </>
   );
 }

@@ -34,13 +34,12 @@ import {
 } from "@/components/ui/select";
 import {
   Card,
-  ConfirmButton,
   EmptyState,
-  Modal,
   Notice,
   PageHeader,
   Spinner,
 } from "../ui";
+import { ConfirmButton, Modal } from "../dialogs";
 
 type NetworkRow = {
   ssid: string;

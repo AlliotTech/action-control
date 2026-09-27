@@ -22,14 +22,13 @@ import {
 } from "@/components/ui/table";
 import {
   Card,
-  ConfirmButton,
   EmptyState,
-  Modal,
   Notice,
   PageHeader,
   Spinner,
   formatBytes,
 } from "../ui";
+import { ConfirmButton, Modal } from "../dialogs";
 
 const pageSize = 20;
 
