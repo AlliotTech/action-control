@@ -58,6 +58,8 @@ static struct {
 } ew;
 
 static void *settings,*panel,*counter_text,*root_object;
+static void *switch_track,*switch_knob;
+static AcRect switch_knob_off,switch_knob_on;
 static AcSlot original_load;
 static int open_pending,close_pending,dump_pending;
 static int shown_hotspot=-1;
@@ -217,6 +219,7 @@ static void hotspot_slot(void *self,void *sender) {
     atomic_store(&ac_status.hotspot_request,on==1?2:1);
     ew.text_string(counter_text,string(on==1?"关闭中…":"开启中…"));
     ew.text_color(counter_text,0xffe0a53a);
+    if(switch_track)ew.rectangle_color(switch_track,0xffe0a53a);
 }
 
 static void configure_item(void *item,const char *title,void *self,void (*method)(void *,void *)) {
@@ -261,7 +264,7 @@ static void hide_panel(void) {
     void *parent=pointer_at(panel,VIEW_PARENT);
     if(parent)ew.remove(parent,panel);
     ew.unlock(panel);
-    panel=NULL;counter_text=NULL;
+    panel=NULL;counter_text=NULL;switch_track=NULL;switch_knob=NULL;
     atomic_store(&ac_status.panel_visible,0);
 }
 
@@ -279,29 +282,73 @@ static void *make_text(void *parent,AcRect rect,const char *text,uint32_t color)
     return view;
 }
 
-static void make_button(AcRect rect,const char *text,void (*slot)(void *,void *)) {
+/* Invisible clickable overlay: an item with no label/icon/arrow, sized to the
+   graphic beneath it, so a press slot fires without the native row chrome. */
+static void make_hit(AcRect rect,void (*slot)(void *,void *)) {
     void *item=ew.new_object(ew.item_class,NULL);
-    configure_item(item,text,panel,slot);
+    configure_item(item,"",panel,slot);
+    ew.item_options(item,0);
     ew.item_count(item,1);ew.item_number(item,0);
     ew.bounds(item,rect);
     ew.add(panel,item,0);
 }
 
-/* Paint a QR matrix as rectangles: one white backdrop plus a black rect per
-   horizontal run of dark modules. Run-merging keeps the object count (and the
-   EW layout cost) far below one-rect-per-module. mp = pixels per module. */
-static void draw_qr(void *parent,int ox,int oy,int mp,const unsigned char *cells,int size) {
+static void make_switch(int cx,int y) {
+    /* Custom toggle mirroring the native look (EW here exposes no rounded/bitmap
+       switch we can drive standalone): bordered track + sliding knob, with a hit
+       item beneath so the tap falls through to run the HTTP toggle; ac_ui_tick
+       recolors the track and moves the knob from the worker-observed state. */
+    int tw=132,th=64,pad=8,ks=th-2*pad,b=2,x=cx-tw/2;
+    make_hit((AcRect){x-b,y-b,x+tw+b,y+th+b},hotspot_slot);
+    void *border=ew.new_object(ew.rectangle_class,NULL);
+    ew.bounds(border,(AcRect){x-b,y-b,x+tw+b,y+th+b});
+    ew.rectangle_color(border,0xff9a9a9a);
+    ew.add(panel,border,0);
+    switch_track=ew.new_object(ew.rectangle_class,NULL);
+    ew.bounds(switch_track,(AcRect){x,y,x+tw,y+th});
+    ew.rectangle_color(switch_track,0xff5a5a5a);
+    ew.add(panel,switch_track,0);
+    switch_knob_off=(AcRect){x+pad,y+pad,x+pad+ks,y+pad+ks};
+    switch_knob_on=(AcRect){x+tw-pad-ks,y+pad,x+tw-pad,y+pad+ks};
+    switch_knob=ew.new_object(ew.rectangle_class,NULL);
+    ew.bounds(switch_knob,switch_knob_off);
+    ew.rectangle_color(switch_knob,0xffffffff);
+    ew.add(panel,switch_knob,0);
+}
+
+/* Back control as a bordered, filled button with a centered label instead of a
+   native list row (whose right arrow reads as "enter", not "back"). */
+static void make_back_button(AcRect rect) {
+    make_hit(rect,close_slot); /* bottom: visuals above are non-interactive */
+    void *border=ew.new_object(ew.rectangle_class,NULL);
+    ew.bounds(border,(AcRect){rect.x1-2,rect.y1-2,rect.x2+2,rect.y2+2});
+    ew.rectangle_color(border,0xff6a6a6a);
+    ew.add(panel,border,0);
     void *bg=ew.new_object(ew.rectangle_class,NULL);
-    ew.bounds(bg,(AcRect){ox,oy,ox+size*mp,oy+size*mp});
+    ew.bounds(bg,rect);
+    ew.rectangle_color(bg,0xff383838);
+    ew.add(panel,bg,0);
+    make_text(panel,rect,"返回",0xffffffff);
+}
+
+/* Paint a QR matrix as rectangles inside an equal box×box white backdrop: the
+   module pixel size is box/size (>=6 for the larger of the two codes) and the
+   grid is centered, so both codes render at the same on-screen footprint.
+   Run-merging keeps the object count far below one rect per module. */
+static void draw_qr(void *parent,int ox,int oy,int box,const unsigned char *cells,int size) {
+    void *bg=ew.new_object(ew.rectangle_class,NULL);
+    ew.bounds(bg,(AcRect){ox,oy,ox+box,oy+box});
     ew.rectangle_color(bg,0xffffffff);
     ew.add(parent,bg,0);
+    int mp=size>0?box/size:0; if(mp<1)mp=1;
+    int inner=size*mp,px=ox+(box-inner)/2,py=oy+(box-inner)/2;
     for(int y=0;y<size;y++) {
         for(int x=0;x<size;) {
             if(!cells[y*AC_QR_MAX+x]) {x++;continue;}
             int x0=x;
             while(x<size && cells[y*AC_QR_MAX+x])x++;
             void *cell=ew.new_object(ew.rectangle_class,NULL);
-            ew.bounds(cell,(AcRect){ox+x0*mp,oy+y*mp,ox+x*mp,oy+(y+1)*mp});
+            ew.bounds(cell,(AcRect){px+x0*mp,py+y*mp,px+x*mp,py+(y+1)*mp});
             ew.rectangle_color(cell,0xff000000);
             ew.add(parent,cell,0);
         }
@@ -328,24 +375,26 @@ static void show_panel(void) {
     for(int i=0;i<4;i++)ew.touch_point[i](blocker,corners[i]);
     ew.add(panel,blocker,0);
     make_text(panel,(AcRect){16,8,width-16,40},"Action Control",0xffffffff);
-    /* 左区:两个二维码(各带标签)。右区:热点控制列(醒目状态+按钮)。
-       中间竖分隔线。6 px/模块腾出右列空间,仍保持可扫。 */
-    int mp=6,ready=atomic_load(&ac_qr_ready);
-    int wifiw=(ready?ac_qr_wifi_size:41)*mp,urlw=(ready?ac_qr_url_size:33)*mp;
-    int qy=76,wx=16,ux=wx+wifiw+16;
-    make_text(panel,(AcRect){wx,44,wx+wifiw,72},"扫码连 WiFi",0xffffffff);
-    make_text(panel,(AcRect){ux,44,ux+urlw,72},"扫码开控制台",0xffffffff);
-    if(ready && ac_qr_wifi_size>0)draw_qr(panel,wx,qy,mp,ac_qr_wifi,ac_qr_wifi_size);
-    if(ready && ac_qr_url_size>0)draw_qr(panel,ux,qy,mp,ac_qr_url,ac_qr_url_size);
+    /* 左侧两个等尺寸二维码(各带标签),右侧热点开关列,中间竖分隔线。
+       两码用相同 box 背板并居中模块,较大者 6 px/模块,仍保持可扫。 */
+    int ready=atomic_load(&ac_qr_ready);
+    int wsz=ready?ac_qr_wifi_size:41,usz=ready?ac_qr_url_size:33;
+    int box=(wsz>usz?wsz:usz)*6; if(box>264)box=264;
+    int gap=16,wx=16,ux=wx+box+gap,qy=76;
+    make_text(panel,(AcRect){wx,44,wx+box,72},"扫码连 WiFi",0xffffffff);
+    make_text(panel,(AcRect){ux,44,ux+box,72},"扫码开控制台",0xffffffff);
+    if(ready && ac_qr_wifi_size>0)draw_qr(panel,wx,qy,box,ac_qr_wifi,ac_qr_wifi_size);
+    if(ready && ac_qr_url_size>0)draw_qr(panel,ux,qy,box,ac_qr_url,ac_qr_url_size);
+    int rx=ux+box+gap+8;
     void *divider=ew.new_object(ew.rectangle_class,NULL);
-    ew.bounds(divider,(AcRect){500,44,502,356});
+    ew.bounds(divider,(AcRect){rx-8,44,rx-6,height-20});
     ew.rectangle_color(divider,0xff3a3a3a);
     ew.add(panel,divider,0);
-    int cx=520;
-    make_text(panel,(AcRect){cx,70,width-16,104},"热点状态",0xffffffff);
-    counter_text=make_text(panel,(AcRect){cx,108,width-16,168},"检测中…",0xffb8b8b8);
-    make_button((AcRect){cx,196,width-16,288},"热点开关",hotspot_slot);
-    make_button((AcRect){cx,296,width-16,380},"返回",close_slot);
+    int rcx=(rx+width-16)/2;
+    make_text(panel,(AcRect){rx,52,width-16,88},"热点状态",0xffffffff);
+    counter_text=make_text(panel,(AcRect){rx,96,width-16,136},"检测中…",0xffb8b8b8);
+    make_switch(rcx,168);
+    make_back_button((AcRect){rx,268,width-16,344});
     ew.add(parent,panel,0);
     atomic_store(&ac_status.panel_visible,1);
 }
@@ -469,6 +518,8 @@ void ac_ui_tick(void *context,int32_t *changed) {
         if(on!=shown_hotspot) {
             ew.text_string(counter_text,string(on==1?"已开启":on==0?"已关闭":"未知"));
             ew.text_color(counter_text,on==1?0xff43d17a:on==0?0xff9a9a9a:0xffe0a53a);
+            if(switch_track)ew.rectangle_color(switch_track,on==1?0xff43d17a:0xff5a5a5a);
+            if(switch_knob)ew.bounds(switch_knob,on==1?switch_knob_on:switch_knob_off);
             shown_hotspot=on;
             if(changed)*changed=1;
         }
