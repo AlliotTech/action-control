@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -19,6 +20,41 @@ const (
 	guiPluginService = "gui.service"
 	guiPluginSidecar = ".restore/gui-plugin.json"
 )
+
+var guiPluginParams = []string{"ac_mode=menu;", "ac_state=/run/action-control-ui-persist;"}
+
+// guiDesiredParams keeps the stock image-loader parameters and (re)appends the
+// activation tokens the plugin needs to attach the menu, dropping any stale
+// ac_mode/ac_state so the result is stable across repeated applies.
+func guiDesiredParams(current any) []any {
+	var out []any
+	if arr, ok := current.([]any); ok {
+		for _, item := range arr {
+			s, ok := item.(string)
+			if !ok || strings.Contains(s, "ac_mode=") || strings.Contains(s, "ac_state=") {
+				continue
+			}
+			out = append(out, s)
+		}
+	}
+	for _, p := range guiPluginParams {
+		out = append(out, p)
+	}
+	return out
+}
+
+func sameParams(current any, desired []any) bool {
+	arr, ok := current.([]any)
+	if !ok || len(arr) != len(desired) {
+		return false
+	}
+	for i := range arr {
+		if arr[i] != desired[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // guiPluginRecord persists in .restore/ (excluded from the private-tree audit)
 // so uninstall can restore the pre-activation config and updates can skip a
@@ -136,8 +172,16 @@ func applyGuiPlugin(a *App) error {
 		record = &guiPluginRecord{OriginalConfig: string(data)}
 	}
 	restart := firstApply || record.AppliedSHA != soSHA
+	changed := false
 	if current, _ := entry["plugin"].(string); current != guiPluginLibrary {
 		entry["plugin"] = guiPluginLibrary
+		changed = true
+	}
+	if desired := guiDesiredParams(entry["parameter"]); !sameParams(entry["parameter"], desired) {
+		entry["parameter"] = desired
+		changed = true
+	}
+	if changed {
 		edited, e := json.MarshalIndent(root, "", "    ")
 		if e != nil {
 			return e

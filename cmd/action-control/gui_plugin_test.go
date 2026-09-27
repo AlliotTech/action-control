@@ -59,6 +59,9 @@ func TestApplyGuiPluginRepointsAndRestores(t *testing.T) {
 	if got := guiEntryPlugin(t, config); got != guiPluginLibrary {
 		t.Fatalf("plugin not repointed: %s", got)
 	}
+	if data, _ := os.ReadFile(config); !strings.Contains(string(data), "ac_mode=menu;") || !strings.Contains(string(data), "ac_state=/run/action-control-ui-persist;") || !strings.Contains(string(data), "image_loader_id=1;") {
+		t.Fatalf("activation params not set: %s", data)
+	}
 	if data, _ := os.ReadFile(config); !strings.Contains(string(data), "gui_lpc_proxy_create") {
 		t.Fatal("unrelated plugin entry was dropped")
 	}
@@ -90,6 +93,9 @@ func TestApplyGuiPluginRepointsAndRestores(t *testing.T) {
 	}
 	if got := guiEntryPlugin(t, config); got != "/usr/lib/libgui_image_loader.so" {
 		t.Fatalf("config not restored to original: %s", got)
+	}
+	if data, _ := os.ReadFile(config); strings.Contains(string(data), "ac_mode=menu;") {
+		t.Fatal("activation params not removed on restore")
 	}
 }
 
