@@ -89,7 +89,7 @@ python3 tools/gui_display.py --serial 123456789ABCDEF --capture --require-progre
 python3 -m unittest discover -s tools -p test_gui_display.py -v
 ```
 
-产物在 `.build-tools/gui-plugin/`。未加入正式安装包或升级流程。
+产物在 `.build-tools/gui-plugin/`,供本地构建与试验;线上部署已并入 action-control 的安装/升级流程（见下「持久安装」）。
 
 不带 `--run` 只做预检和主机证据保存。受控试验须亮屏、处于正常活动预览、无媒体写入及其他 GUI 配置覆盖，并通过显示基线检查：
 
@@ -102,8 +102,13 @@ python3 tools/test-gui-plugin.py --serial 123456789ABCDEF --mode menu --exercise
 
 ## 持久安装
 
-插件文件放 `/blackbox/upgrade/action-control/gui/`,通过**直接改 `/etc/disp0_plugins_config.json`** 把 `gui_image_loader_create` 条目的 `plugin` 指向该 `.so`,并在其 `parameter` 数组加 `ac_mode=menu;` `ac_state=/run/action-control-ui-persist;`。
+已并入 action-control 的安装/升级流程,无需手动操作:
 
-mode/state 走 config parameter 串(`dji_gui` 运行时读取,此时 `/etc` overlay 已挂),而非 systemd 环境变量——本机 systemd 在 `/etc` overlay 挂载前就解析了 `gui.service`,冷启动时 drop-in/主单元的 `Environment=` 与 `ExecStartPre=` 都不会应用到运行实例。插件在 attach 时自建 state 目录(root 0700),不依赖 `ExecStartPre`;env 仍作为试验 harness 的回退。fingerprint SHA 校验保留为安全闸。
+- 库文件作为受管 payload 文件随安装落到 `/blackbox/upgrade/action-control/bin/libaction_control_gui.so`(被 install-state 记录,更新重铺、卸载随目录清除,不触发未记录守卫)。
+- 安装/更新时 `applyGuiPlugin` 把 `/etc/disp0_plugins_config.json` 里 `gui_image_loader_create` 条目的 `plugin` 指向该 `.so`,并规范化 `parameter`:保留原有项(如 `image_loader_id=1;`),补写 `ac_mode=menu;` 与 `ac_state=/run/action-control-ui-persist;`,随后按需重启 `gui.service`(仅当库或配置实际变化时,幂等)。
+- 固件闸:显示配置无该条目则跳过;`.so` 另按后屏 GUI 指纹自校验,不符时转发原生插件。首次改动前把原始 `/etc` 配置存入 `.restore/gui-plugin.json`。
+- 卸载:`restoreGuiPlugin` 从 `.restore/gui-plugin.json` 逐字还原原始显示配置并重启 `gui.service`。
 
-卸载:运行 `/blackbox/upgrade/action-control/gui/uninstall.sh`(从 `disp0_plugins_config.orig.json` 恢复原配置并重启 `gui.service`)。冷启动已验证:插件 5 秒内 attach、ticks 持续推进、面板两码经 scanout 解码可扫。
+mode/state 走 config parameter 串(`dji_gui` 运行时读取,此时 `/etc` overlay 已挂),而非 systemd 环境变量——本机 systemd 在 `/etc` overlay 挂载前就解析了 `gui.service`,冷启动时 drop-in/主单元的 `Environment=` 与 `ExecStartPre=` 都不会应用到运行实例。插件在 attach 时自建 state 目录(root 0700);env 仅作试验 harness 回退。fingerprint SHA 校验为安全闸。
+
+`.build-tools/gui-plugin/` 的手动产物与 `gui/uninstall.sh` 仅用于本地试验;线上以上述安装流程为准。冷启动已验证:插件 5 秒内 attach、ticks 持续推进、面板两码经 scanout 解码可扫。
